@@ -1,11 +1,11 @@
 {
-  "name": "Spy Finder Pro",
-  "short_name": "Spy Finder",
+  "name": "BackSpyne Tracker",
+  "short_name": "BackSpyne",
   "start_url": "/",
   "display": "standalone",
-  "theme_color": "#0f172a",
-  "background_color": "#0f172a",
-  "description": "Distributed Mesh Component Scanner",
+  "theme_color": "#0b1120",
+  "background_color": "#0b1120",
+  "description": "BackSpyne Distributed Mesh Component Scanner",
   "icons": [
     {
       "src": "https://upload.wikimedia.org/wikipedia/commons/4/4e/Radar_icon.svg",

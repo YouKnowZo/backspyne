@@ -4,10 +4,12 @@ import os
 import threading
 import platform
 import psutil
+import time
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from bleak import BleakScanner
 import uvicorn
+from mac_vendor_lookup import AsyncMacLookup
 
 app = FastAPI()
 
@@ -19,10 +21,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-latest_scan = {
-    "wifi": [],
-    "bluetooth": []
+mac_lookup = AsyncMacLookup()
+vendor_cache = {}
+
+# Persistent Tracking Dictionary
+discovered_devices = {
+    "wifi": {},
+    "bluetooth": {}
 }
+
+async def get_vendor_name(mac_address):
+    if mac_address in vendor_cache:
+        return vendor_cache[mac_address]
+    try:
+        vendor = await mac_lookup.lookup(mac_address)
+        vendor_cache[mac_address] = vendor
+        return vendor
+    except Exception:
+        vendor_cache[mac_address] = "Unknown Manufacturer"
+        return "Unknown Manufacturer"
 
 def get_system_specs():
     return {
@@ -35,13 +52,13 @@ def get_system_specs():
         "ram_usage_percent": psutil.virtual_memory().percent,
     }
 
-def get_wifi_devices():
-    devices = []
+async def scan_wifi_devices():
     try:
         result = subprocess.run(['netsh', 'wlan', 'show', 'networks', 'mode=bssid'], capture_output=True, text=True)
         output = result.stdout
         current_ssid = ""
         bssid = ""
+        
         for line in output.split('\n'):
             line = line.strip()
             if line.startswith("SSID"):
@@ -56,37 +73,56 @@ def get_wifi_devices():
                 parts = line.split(":")
                 if len(parts) > 1:
                     signal = parts[1].strip()
-                    devices.append({
-                        "type": "Wi-Fi",
-                        "name": current_ssid if current_ssid else "Hidden Network",
-                        "address": bssid,
-                        "signal": signal,
-                        "rssi": int(signal.replace('%', ''))
-                    })
-    except:
-        pass
-    return devices
+                    rssi = int(signal.replace('%', ''))
+                    
+                    if bssid:
+                        vendor = await get_vendor_name(bssid)
+                        discovered_devices["wifi"][bssid] = {
+                            "type": "Wi-Fi",
+                            "name": current_ssid if current_ssid else "Hidden Network",
+                            "address": bssid,
+                            "signal": signal,
+                            "rssi": rssi,
+                            "vendor": vendor,
+                            "last_seen": int(time.time()),
+                            "active": True
+                        }
+    except Exception as e:
+        print("Wi-Fi Scan Error:", e)
 
 async def scan_loop():
-    print("Mesh Scanner node loop started. Press Ctrl+C to terminate.")
+    print("BackSpyne Engine Started. Press Ctrl+C to terminate.")
+    
+    # Pre-load mac lookup database
+    try:
+        await mac_lookup.update_vendors()
+    except Exception:
+        print("Could not download latest MAC OUI database. Continuing.")
+        pass
+
     while True:
         try:
-            wifi_devices = get_wifi_devices()
-            wifi_devices.sort(key=lambda x: x['rssi'], reverse=True)
-            latest_scan["wifi"] = wifi_devices
+            # Mark all as inactive temporarily
+            for t in discovered_devices.keys():
+                for mac in discovered_devices[t]:
+                    discovered_devices[t][mac]["active"] = False
+
+            await scan_wifi_devices()
             
             ble_devices = await BleakScanner.discover(timeout=2.0, return_adv=True)
-            bt_devices = []
             for addr, (device, adv_data) in ble_devices.items():
-                bt_devices.append({
+                vendor = await get_vendor_name(addr)
+                discovered_devices["bluetooth"][addr] = {
                     "type": "Bluetooth",
                     "name": device.name if device.name else "Unknown Device",
                     "address": addr,
                     "signal": f"{adv_data.rssi} dBm",
-                    "rssi": adv_data.rssi
-                })
-            bt_devices.sort(key=lambda x: x['rssi'], reverse=True)
-            latest_scan["bluetooth"] = bt_devices
+                    "rssi": adv_data.rssi,
+                    "vendor": vendor,
+                    "last_seen": int(time.time()),
+                    "active": True
+                }
+                
         except Exception as e:
             pass
         await asyncio.sleep(1)
@@ -101,16 +137,15 @@ async def startup_event():
     loop = asyncio.new_event_loop()
     t = threading.Thread(target=start_background_loop, args=(loop,), daemon=True)
     t.start()
-    # initialize psutil CPU percentage
     psutil.cpu_percent(interval=None)
 
 @app.get("/api/scan")
 def get_scan_data():
     return {
         "node_specs": get_system_specs(),
-        "scan_data": latest_scan
+        "scan_data": discovered_devices
     }
 
 if __name__ == "__main__":
-    print("Starting API Server. Mesh Nodes can communicate via this port.")
+    print("Starting BackSpyne Engine.")
     uvicorn.run("gui_server:app", host="0.0.0.0", port=8000, reload=False)

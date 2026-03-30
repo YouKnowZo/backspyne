@@ -2,3 +2,4 @@ bleak
 fastapi
 uvicorn
 psutil
+mac-vendor-lookup

@@ -1,20 +1,21 @@
-# Spy Finder Pro 🛡️ - Distributed Mesh Triangulation
+# BackSpyne 🛡️ - Advanced Live Tracker
 
-**Spy Finder Pro** is a modern, high-grade Progressive Web App (PWA) and Python engine designed to locate hidden electronics using localized signal intelligence. 
+**BackSpyne** is a military-inspired, high-grade Progressive Web App (PWA) and Python engine designed to locate, identify, and track hidden electronics using localized signal intelligence. 
 
-By analyzing the radio frequency strength patterns of Wi-Fi Access Points and Bluetooth Low Energy (BLE) emissions, Spy Finder Pro lets you monitor devices broadcasting around you in real-time.
+By aggressively analyzing radio frequency patterns of Wi-Fi Access Points and Bluetooth Low Energy (BLE) emissions, BackSpyne lets you map devices broadcasting instantly around you, decode their MAC hardware Manufacturer, and definitively track them down using Sonar-like targeting.
 
-Because modern mobile devices lock out raw Wi-Fi network scanning, Spy Finder Pro bypasses this by moving the engine hardware off your phone into your local PC hardware. The **engine handles deep PC-hardware hardware scans**, and streams that to the **beautiful React JS Progressive Web Application Dashboard**, creating an unparalleled radar console.
-
-✨ **Core Feature: Distributed Mesh Nodes** ✨
-Physical hardware devices cannot stack radio antennas arbitrarily for precision location. Spy Finder Pro solves this mathematically using **Distributed Mesh Networks**. You can run the `start_gui.bat` node script on *multiple computers simultaneously* around your property. When you add their specific IP addresses into the Web Dashboard, the dashboard correlates their scans, giving you multiple "viewpoints" and drastically improving device location triangulating power!
+✨ **Core Features** ✨
+1. **Sonar Target Tracking Mode**: Click any device to lock on. A large animated radar focuses entirely on tracking that single MAC address, emitting an audible Sonar Ping that increases in speed and pitch as you close in on the hidden device.
+2. **Persistent Ghost Tracking**: BackSpyne remembers devices even after they stop broadcasting, labeling them "Target Lost" so you have a complete historical record of what was scanning you. 
+3. **Hardware Decoding**: Utilizes OUI MAC Decoders to identify if a mysterious network is an Apple, Samsung, Intel, or other vendor chip.
+4. **Data Exfiltration / CSV Export**: With one click, download a complete Excel/CSV report of every tracked device, its vendor, and maximum proximity detected to your PC.
+5. **Distributed Mesh Nodes**: Combine multiple computers (scanners) via IP across your property directly into one single unified Radar Dashboard map.
 
 ## Installation & Setup 💻 (The Engine)
 
 ### Requirements:
-1. Python 3.9+
-2. A Windows built-in Wi-Fi adapter.
-3. A Windows built-in Bluetooth adapter.
+1. Python 3.9+ 
+2. Build-in Wi-Fi & Bluetooth PC Adapters.
 
 ### Startup Guide:
 
@@ -22,34 +23,29 @@ Physical hardware devices cannot stack radio antennas arbitrarily for precision 
 ```bash
 pip install -r requirements.txt
 ```
-2. Double-click the included `start_gui.bat`. This automatically starts two processes in your terminal:
-   - **The Background API Scanner (port 8000)**: Collects your antenna hardware specifications and signal traces.
-   - **The Web Dashboard Interface (port 5173)**: Boots your User Interface.
+2. Double-click the included `start_gui.bat`. This automatically opens your dashboard and your Python API server simultaneously.
 
-*NOTE*: Upon successful boot, look at your Node Terminal window. It will expose a Local IP like `http://192.168.1.15:5173`. That is the portal specific to your property!
+*NOTE*: Upon successful boot, look at your Node Terminal window. It will expose a Local IP like `http://192.168.1.15:5173`. That is the portal specific to your mobile phone!
 
 ## Android & iOS (The Remote UI) 📱 
 
-Because this application exposes itself dynamically over your local Wi-Fi, turning your phone into the ultimate remote-control tracker is incredibly simple.
+Because this application dynamically surfaces itself over your local Wi-Fi, turning your phone into the ultimate remote-control tracker is incredibly simple.
 
 1. Connect your Android or iOS device to the **SAME Wi-Fi network** as the scanning PC.
 2. Open Safari (iOS) or Chrome (Android) and type the specific IP address exposed by the `start_gui` command (for example: `http://192.168.1.15:5173`).
-3. The stunning radar UI will display on your phone, streaming the backend data live!
+3. The stunning BackSpyne radar UI will load identically on your phone!
 
 **How to fully "Install" the app on your Phone:**
-Spy Finder Pro is built deeply compliant as a PWA (Progressive Web Application), with a registered Service Worker. 
-
-- **Apple (iOS/Safari)**: Tap the "Share" icon at the bottom center of Safari, scroll down to the actions list, and tap **"Add to Home Screen"**. Spy Finder Pro will install as a native app and run in pristine full screen.
-- **Android**: Tap the URL three-dots menu icon and tap **"Install App"** (or "Add to Home Screen").
+BackSpyne is deeply compliant as a PWA (Progressive Web Application).
+- **Apple (iOS/Safari)**: Tap the "Share" icon at the bottom center of Safari, scroll down to the actions list, and tap **"Add to Home Screen"**. 
+- **Android**: Tap the URL three-dots menu icon and tap **"Install App"**.
 
 ## Combining Nodes 🚀 (Advanced Tracing)
 A single node tells you signal strength. Multiple nodes tell you *exact* origins. 
 
 1. Install this Github repository on a second laptop or PC over the network.
 2. Open `start_gui.bat` on the *second* platform. Note its specific IP address shown in its console.
-3. Open the Spy Finder Dashboard UI, scroll to the **Active Scanner Nodes**, and type the second platform's IP. Press **"Combine Node"**.
-
-The Dashboard will aggressively start blending signals seen by both networks, comparing the raw data streams simultaneously and calculating which nodes see a hidden component the strongest. 
+3. Open the Dashboard UI, scroll to the **Networked Nodes**, and type the second platform's IP. Press **"Combine Node"**.
 
 ---
-**Disclaimer**: This is a defensive privacy tool. Do not scan infrastructure you do not have authorizations on. Bluetooth scanning and MAC discovery functions act passively based on local emissions laws.
+**Disclaimer**: This is a defensive privacy tool. Do not scan infrastructure you do not have authorizations on.
