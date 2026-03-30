@@ -10,6 +10,7 @@ function App() {
   
   const [trackedTarget, setTrackedTarget] = useState(null);
   const [showHowTo, setShowHowTo] = useState(false);
+  const [showProMode, setShowProMode] = useState(false);
 
   useEffect(() => {
     const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -38,22 +39,39 @@ function App() {
   };
 
   useEffect(() => {
-    const fetchAllNodes = async () => {
-      for (const ip of nodes) {
-        try {
-          const host = ip || 'localhost';
-          const res = await fetch(`http://${host}:8000/api/scan`);
-          const json = await res.json();
-          setNodesData(prev => ({...prev, [ip]: json}));
-        } catch (err) {
-          console.error(`Node ${ip} fetch error:`, err);
-        }
-      }
+    const sockets = [];
+
+    nodes.forEach(ip => {
+      const host = ip || 'localhost';
+      const wsUrl = `ws://${host}:8000/ws`;
+      
+      const connectWebSocket = () => {
+        const ws = new WebSocket(wsUrl);
+        
+        ws.onmessage = (event) => {
+          try {
+            const json = JSON.parse(event.data);
+            setNodesData(prev => ({...prev, [ip]: json}));
+          } catch(e) {}
+        };
+        
+        ws.onerror = () => {
+           console.error(`WebSocket connection failed for ${ip}`);
+        };
+
+        ws.onclose = () => {
+           // Attempt reconnect after 5s if node drops
+           setTimeout(connectWebSocket, 5000);
+        };
+        sockets.push(ws);
+      };
+
+      connectWebSocket();
+    });
+
+    return () => {
+      sockets.forEach(ws => ws.close());
     };
-    
-    fetchAllNodes();
-    const intv = setInterval(fetchAllNodes, 2000);
-    return () => clearInterval(intv);
   }, [nodes]);
 
   const addNode = (e) => {
@@ -223,8 +241,8 @@ function App() {
             <h2>BackSpyne Field Manual</h2>
             <p className="creator-tag">Created exclusively by <strong>paperbagexpress</strong></p>
             <div className="modal-scroll-area">
-              <h3>System Overview</h3>
-              <p>BackSpyne is an advanced military-inspired tracking system designed to identify hidden hardware, cameras, electronics, and intercept signals via specialized Node networking.</p>
+              <h3>System Architecture V2</h3>
+              <p>BackSpyne operates on a high-availability WebSocket grid architecture utilizing deep local SQLite storage to permanently log hardware MAC ghosts.</p>
               
               <h3>How to Configure Mesh Triangulation</h3>
               <p>Mesh Triangulation physically links multiple computers scanning around your property to find exactly where a signal is strongest.</p>
@@ -234,14 +252,24 @@ function App() {
                 <li><strong>Link Them:</strong> On your main computer (Node A), scroll to the "Inject Remote Node IP" box at the bottom. Type in Node B's IP (`192.168.1.20`) and click **Deploy Mesh**.</li>
               </ol>
               <p>Result: Your Dashboard will now pull scans from BOTH computers simultaneously! In the Target Tracking view, you will see exactly which node has the strongest signal, letting you triangulate its exact physical position!</p>
-              
-              <h3>Usage Directives</h3>
-              <ul>
-                <li><strong>Sonar Audio:</strong> Enables an audible beep pinging directly proportional to your physical proximity to a tracked device.</li>
-                <li><strong>Tracking Mode:</strong> Tap any target grid item to lock your radar. If a tracker disappears, it falls into "Ghost Status", allowing you to permanently track what scanned you previously.</li>
-              </ul>
             </div>
             <button className="btn close-modal" onClick={() => setShowHowTo(false)}>CLOSE MANUAL</button>
+          </div>
+        </div>
+      )}
+
+      {showProMode && (
+        <div className="modal-overlay" onClick={() => setShowProMode(false)}>
+          <div className="modal-content pro-modal glassmorphism" onClick={e => e.stopPropagation()}>
+            <h2 style={{color: '#ef4444'}}>UNAUTHORIZED ACTION</h2>
+            <p className="creator-tag">Hardware Requirement Missing</p>
+            <div className="modal-scroll-area">
+              <h3>Monitor Mode Injection Failed</h3>
+              <p>You are attempting to activate <strong>PRO MODE: Packet Sniffing</strong>.</p>
+              <p>To bypass standard Windows Access Point limitations and enter raw packet interception (Monitor Mode), BackSpyne requires an external USB antenna with `scapy` driver support (e.g., ALFA Network AWUS036ACH).</p>
+              <p>Currently, your native operating system explicitly locks the built-in wireless card to Managed Mode. Plug in a compatible SDR Antenna to unlock Live Packet Inspection.</p>
+            </div>
+            <button className="btn close-modal" style={{borderColor: '#ef4444'}} onClick={() => setShowProMode(false)}>ACKNOWLEDGE</button>
           </div>
         </div>
       )}
@@ -258,12 +286,13 @@ function App() {
         </div>
         
         <div className="action-buttons">
+          <button className="btn activate pro-btn" onClick={() => setShowProMode(true)}>PRO MODE: MONITOR SNIFFER</button>
           <button className="btn activate" onClick={() => {
             if(pingSynth.current && pingSynth.current.state === 'suspended') {
                pingSynth.current.resume();
             }
           }}>Enable Sonar Audio</button>
-          <button className="btn outline" onClick={() => setShowHowTo(true)}>Field Manual (How to Use)</button>
+          <button className="btn outline" onClick={() => setShowHowTo(true)}>Field Manual</button>
           <button className="btn download" onClick={downloadCSV}>Export DeepTrace CSV</button>
         </div>
       </header>
@@ -272,7 +301,7 @@ function App() {
         <section className="sensor-panel full-panel glassmorphism">
           <div className="panel-header">
             <h2>Radar Targets Discovered</h2>
-            <span className="target-count">{sortedDevices.length} TRACED</span>
+            <span className="target-count">{sortedDevices.length} ENTITIES CACHED</span>
           </div>
           <div className="device-list grid-list">
             {sortedDevices.map(d => {
@@ -293,7 +322,7 @@ function App() {
                        <span className="device-vendor">{d.vendor || 'Unknown Manufacturer'}</span>
                        {isRandomizedMac(d.address) && <span className="rand-tag" title="Randomized MAC">Secured</span>}
                      </div>
-                     {!d.active && <span className="device-ghosting">GHOSTED</span>}
+                     {!d.active && <span className="device-ghosting">GHOSTED (SQL LOGGED)</span>}
                    </div>
                    <div className="target-strength">
                      <span className="target-percent" style={{color: pxColor}}>{normalized.toFixed(0)}%</span>
@@ -308,12 +337,12 @@ function App() {
 
         <section className="nodes-panel glassmorphism">
           <div className="panel-header">
-            <h2>Active Networked Nodes</h2>
+            <h2>Active Networked Nodes [WebSockets]</h2>
           </div>
           <div className="nodes-list">
              {nodes.map(ip => {
                const data = nodesData[ip];
-               if (!data) return <div key={ip} className="node-item loading">Tracer [ {ip} ] Establishing comms...</div>;
+               if (!data) return <div key={ip} className="node-item loading">Tracer [ {ip} ] Establishing WS comms...</div>;
                const specs = data.node_specs;
                return (
                  <div key={ip} className="node-item active">
@@ -338,7 +367,7 @@ function App() {
       </main>
 
       <footer className="footer glassmorphism">
-        <p><strong>BackSpyne Track & Trace Utility</strong> exclusively engineered and produced by <strong>paperbagexpress</strong></p>
+        <p><strong>BackSpyne Track & Trace Utility | Version 2.0.1 Architecture</strong> exclusively engineered and produced by <strong>paperbagexpress</strong></p>
         <div className="footer-links">
           <a href="https://github.com/YouKnowZo/backspyne" target="_blank" rel="noreferrer">GitHub Repository</a>
           <span className="divider">|</span>
