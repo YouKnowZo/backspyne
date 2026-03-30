@@ -8,10 +8,22 @@
     <meta name="theme-color" content="#0f172a" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>Spy Finder Pro Tracker</title>
+    <title>Spy Finder Pro</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Register Service Worker for PWA compliance (installable on Android/iOS)
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js').then(function(registration) {
+            console.log('ServiceWorker registration successful with scope: ', registration.scope);
+          }, function(err) {
+            console.log('ServiceWorker registration failed: ', err);
+          });
+        });
+      }
+    </script>
   </body>
 </html>
