@@ -5,6 +5,7 @@ import threading
 import platform
 import psutil
 import time
+import socket
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from bleak import BleakScanner
@@ -24,11 +25,21 @@ app.add_middleware(
 mac_lookup = AsyncMacLookup()
 vendor_cache = {}
 
-# Persistent Tracking Dictionary
 discovered_devices = {
     "wifi": {},
     "bluetooth": {}
 }
+
+def get_local_ip():
+    try:
+        # Create a dummy socket to find out what IP we use to reach the internet
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
 
 async def get_vendor_name(mac_address):
     if mac_address in vendor_cache:
@@ -44,6 +55,7 @@ async def get_vendor_name(mac_address):
 def get_system_specs():
     return {
         "hostname": platform.node(),
+        "ip_address": get_local_ip(),
         "os": platform.system(),
         "os_release": platform.release(),
         "cpu_cores": psutil.cpu_count(logical=True),
@@ -93,16 +105,13 @@ async def scan_wifi_devices():
 async def scan_loop():
     print("BackSpyne Engine Started. Press Ctrl+C to terminate.")
     
-    # Pre-load mac lookup database
     try:
         await mac_lookup.update_vendors()
     except Exception:
-        print("Could not download latest MAC OUI database. Continuing.")
         pass
 
     while True:
         try:
-            # Mark all as inactive temporarily
             for t in discovered_devices.keys():
                 for mac in discovered_devices[t]:
                     discovered_devices[t][mac]["active"] = False
@@ -133,7 +142,6 @@ def start_background_loop(loop):
 
 @app.on_event("startup")
 async def startup_event():
-    # Start the scanning loop in a background thread
     loop = asyncio.new_event_loop()
     t = threading.Thread(target=start_background_loop, args=(loop,), daemon=True)
     t.start()
@@ -147,5 +155,8 @@ def get_scan_data():
     }
 
 if __name__ == "__main__":
-    print("Starting BackSpyne Engine.")
+    ip = get_local_ip()
+    print(f"\n=======================================================")
+    print(f" BackSpyne Server Live: Host IP is [{ip}] ")
+    print(f"=======================================================\n")
     uvicorn.run("gui_server:app", host="0.0.0.0", port=8000, reload=False)

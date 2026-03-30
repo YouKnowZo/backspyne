@@ -131,14 +131,12 @@ function App() {
     return '#64748b'; 
   };
 
-  // Security parsing for specialized hardware mapping
   const isRandomizedMac = (mac) => {
     if (!mac || mac.length < 5) return false;
     const char = mac.charAt(1).toUpperCase();
     return ['2', '6', 'A', 'E'].includes(char);
   };
 
-  // Tracking Mode Render
   if (trackedTarget && aggregatedDevices[trackedTarget]) {
     const d = aggregatedDevices[trackedTarget];
     let normalized = d.type === 'Wi-Fi' ? d.rssi : Math.max(0, Math.min(100, (d.rssi + 100) * (100/70)));
@@ -208,7 +206,7 @@ function App() {
             <h3>Mesh Detection Intercepts</h3>
             <ul>
               {d.detections.map((det, i) => (
-                <li key={i}>Node [ {det.node} ] intercepted signal at {det.signal}</li>
+                <li key={i}>Node [ {det.node} ] intercepted signal at {det.signal} ⚡</li>
               ))}
             </ul>
           </div>
@@ -228,12 +226,19 @@ function App() {
               <h3>System Overview</h3>
               <p>BackSpyne is an advanced military-inspired tracking system designed to identify hidden hardware, cameras, electronics, and intercept signals via specialized Node networking.</p>
               
+              <h3>How to Configure Mesh Triangulation</h3>
+              <p>Mesh Triangulation physically links multiple computers scanning around your property to find exactly where a signal is strongest.</p>
+              <ol>
+                <li><strong>Setup Node A:</strong> Run `start_gui.bat` on your first PC. Look at the "Active Network Nodes" UI box below. It will show you its exact IP address (e.g. `192.168.1.15`).</li>
+                <li><strong>Setup Node B:</strong> Copy the BackSpyne folder to a second laptop and run `start_gui.bat` on it. Place it in another room. Look at its UI to find its IP address (e.g. `192.168.1.20`).</li>
+                <li><strong>Link Them:</strong> On your main computer (Node A), scroll to the "Inject Remote Node IP" box at the bottom. Type in Node B's IP (`192.168.1.20`) and click **Deploy Mesh**.</li>
+              </ol>
+              <p>Result: Your Dashboard will now pull scans from BOTH computers simultaneously! In the Target Tracking view, you will see exactly which node has the strongest signal, letting you triangulate its exact physical position!</p>
+              
               <h3>Usage Directives</h3>
               <ul>
                 <li><strong>Sonar Audio:</strong> Enables an audible beep pinging directly proportional to your physical proximity to a tracked device.</li>
                 <li><strong>Tracking Mode:</strong> Tap any target grid item to lock your radar. If a tracker disappears, it falls into "Ghost Status", allowing you to permanently track what scanned you previously.</li>
-                <li><strong>Mesh Triangulation:</strong> Use multiple computers around your compound running the BackSpyne engine. Add their local IPs in the "Networked Nodes" section to aggressively pinpoint origins.</li>
-                <li><strong>Deep Traces:</strong> If an unknown Manufacturer appears, open its Intelligence profile to manually execute an external Deep Trace to force-find the component producer.</li>
               </ul>
             </div>
             <button className="btn close-modal" onClick={() => setShowHowTo(false)}>CLOSE MANUAL</button>
@@ -314,7 +319,7 @@ function App() {
                  <div key={ip} className="node-item active">
                    <div className="node-header">
                      <span className="node-hostname">{specs.hostname}</span>
-                     <span className="node-ip">{ip === window.location.hostname ? 'Local Node' : ip}</span>
+                     <span className="node-ip">Host IP: {specs.ip_address}</span>
                    </div>
                  </div>
                )
