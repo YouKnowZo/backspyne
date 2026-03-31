@@ -1,6 +1,9 @@
 import asyncio
 import subprocess
 import os
+import sys
+import threading
+import os
 import threading
 import platform
 import psutil
@@ -9,6 +12,8 @@ import socket
 import sqlite3
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from bleak import BleakScanner
 import uvicorn
 from mac_vendor_lookup import AsyncMacLookup
@@ -216,7 +221,6 @@ async def scan_loop():
         except Exception as e:
             pass
             
-        # Push to all connected websockets
         payload = {
             "node_specs": get_system_specs(),
             "scan_data": discovered_devices
@@ -240,7 +244,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # We don't expect client to send anything, just keep conn alive
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -251,6 +254,24 @@ def get_scan_data():
         "node_specs": get_system_specs(),
         "scan_data": discovered_devices
     }
+
+def get_base_path():
+    if hasattr(sys, '_MEIPASS'):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+base_path = get_base_path()
+dist_dir = os.path.join(base_path, "web_gui", "dist")
+
+if os.path.exists(dist_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_dir, "assets")), name="assets")
+    
+    @app.get("/{full_path:path}")
+    async def serve_pwa(full_path: str):
+        file_path = os.path.join(dist_dir, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(dist_dir, "index.html"))
 
 if __name__ == "__main__":
     ip = get_local_ip()
