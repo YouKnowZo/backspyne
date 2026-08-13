@@ -1,6 +1,6 @@
-# [Project name]
+# BackSpyne
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+BackSpyne is a local-first RF intelligence dashboard for authorized environments, helping operators explore nearby WiFi/BLE telemetry, track signal proximity, coordinate scan nodes, and review privacy-bounded sensing signals.
 
 ## Run & Operate
 
@@ -19,26 +19,35 @@ _Replace the heading above with the project's name, and this line with one sente
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
+- Frontend: React + Vite + Tailwind CSS
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/backspyne/src/App.tsx` — local-first dashboard experience and simulated RF telemetry state
+- `artifacts/backspyne/src/index.css` — BackSpyne visual tokens and responsive styling
+- `artifacts/api-server/src/routes/` — shared API routes
+- `lib/api-spec/openapi.yaml` — shared API contract source of truth
+- `lib/db/src/schema/` — shared database schema
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The first product surface is local-first: the dashboard works with simulated telemetry and browser-local persistence before a real sensor adapter is connected.
+- The UI makes the simulated-data boundary visible and keeps the authorized-environments disclaimer close to the telemetry surface.
+- The dashboard is designed around defensive observation only; it does not attempt to access WiFi/BLE hardware directly from the browser.
+- BackSpyne uses a dense command-surface layout with a radar visualization, device ledger, sensing view, and network-node view as the primary navigation model.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+BackSpyne provides a live-feeling operations dashboard for discovering nearby RF targets, locking onto a target, reviewing signal history, preserving ghost/offline sightings, decoding vendors, exporting a device ledger, and coordinating local scan nodes. Sensing and model workflows are represented as an extensible surface for future ESP32/CSI adapters.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Keep the experience privacy-first, camera-free, and explicit about authorization and telemetry provenance.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- Real WiFi/BLE/CSI capture requires a separate authorized hardware or local service adapter; the browser dashboard intentionally does not fake direct hardware access.
+- The BackSpyne workflow provides `PORT` and `BASE_PATH`; use the managed workflow instead of starting Vite manually.
 
 ## Pointers
 

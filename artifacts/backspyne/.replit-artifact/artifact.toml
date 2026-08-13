@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "BackSpyne"
+description = "A privacy-first local RF intelligence dashboard for mapping nearby WiFi and BLE devices, tracking signal proximity, coordinating scan nodes, and exploring camera-free sensing telemetry."
+version = "1.0.0"
+id = "artifacts/backspyne"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22750
+
+[services.development]
+run = "pnpm --filter @workspace/backspyne run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/backspyne", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/backspyne/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22750"
+BASE_PATH = "/"
