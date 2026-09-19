@@ -1,22 +1,21 @@
 openapi: 3.1.0
 info:
-  # Do not change the title, if the title changes, the import paths will be broken
   title: Api
-  version: 0.1.0
-  description: API specification
+  version: 0.2.0
+  description: BackSpyne operator and local-node telemetry API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: operator
+  - name: telemetry
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +23,595 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /me:
+    get:
+      operationId: getCurrentOperator
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: Current authenticated operator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentOperator"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /devices:
+    get:
+      operationId: listDevices
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: RF devices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RfDevice"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /devices/{id}:
+    patch:
+      operationId: updateDevice
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDevice"
+      responses:
+        "200":
+          description: Updated device
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device]
+                properties:
+                  device: { $ref: "#/components/schemas/RfDevice" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /devices/{id}/trail:
+    get:
+      operationId: getDeviceTrail
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Device sightings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sightings]
+                properties:
+                  sightings:
+                    type: array
+                    items: { $ref: "#/components/schemas/RfSighting" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /nodes:
+    get:
+      operationId: listNodes
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: Scanner nodes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes]
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScanNode"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createNode
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNode"
+      responses:
+        "201":
+          description: Node created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: { $ref: "#/components/schemas/ScanNode" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /nodes/{id}:
+    patch:
+      operationId: updateNode
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateNode" }
+      responses:
+        "200":
+          description: Updated node
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: { $ref: "#/components/schemas/ScanNode" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    delete:
+      operationId: deleteNode
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Node deleted }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions:
+    get:
+      operationId: listScanSessions
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ScanSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createScanSession
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateScanSession"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session:
+                    $ref: "#/components/schemas/ScanSession"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions/{id}/close:
+    post:
+      operationId: closeScanSession
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Closed session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session: { $ref: "#/components/schemas/ScanSession" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions/{id}:
+    patch:
+      operationId: updateScanSession
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateScanSession" }
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session: { $ref: "#/components/schemas/ScanSession" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sensing/summary:
+    get:
+      operationId: getSensingSummary
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: Latest and recent sensing snapshots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SensingSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /evidence:
+    get:
+      operationId: listEvidence
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: Governed evidence records
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [records]
+                properties:
+                  records:
+                    type: array
+                    items: { $ref: "#/components/schemas/EvidenceRecord" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createEvidence
+      tags: [operator]
+      security: [{ clerkSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateEvidence" }
+      responses:
+        "201":
+          description: Evidence created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [record]
+                properties:
+                  record: { $ref: "#/components/schemas/EvidenceRecord" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /stream:
+    get:
+      operationId: streamTelemetry
+      tags: [telemetry]
+      security: [{ clerkSession: [] }]
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /ingest/telemetry:
+    post:
+      operationId: ingestTelemetry
+      tags: [telemetry]
+      security: [{ nodeSignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelemetryIngest"
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelemetryAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 components:
+  securitySchemes:
+    clerkSession:
+      type: apiKey
+      in: cookie
+      name: __session
+    nodeSignature:
+      type: apiKey
+      in: header
+      name: X-Backspyne-Node-Token
+  responses:
+    Unauthorized:
+      description: Authentication failed
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+    CurrentOperator:
+      type: object
+      required: [userId]
+      properties:
+        userId:
+          type: string
+    CreateScanSession:
+      type: object
+      properties:
+        label:
+          type: string
+          maxLength: 120
+    UpdateScanSession:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [active, paused]
+    CreateNode:
+      type: object
+      required: [name, address]
+      properties:
+        name: { type: string, maxLength: 120 }
+        address: { type: string, maxLength: 200 }
+        role: { type: string, maxLength: 80 }
+        capabilities:
+          type: array
+          items: { type: string }
+    UpdateNode:
+      type: object
+      properties:
+        name: { type: string, maxLength: 120 }
+        address: { type: string, maxLength: 200 }
+        role: { type: string, maxLength: 80 }
+        status:
+          type: string
+          enum: [online, offline, degraded]
+    UpdateDevice:
+      type: object
+      required: [favorite]
+      properties:
+        favorite: { type: boolean }
+    ScanSession:
+      type: object
+      required: [id, ownerId, label, status, startedAt]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        label: { type: string }
+        status:
+          type: string
+          enum: [active, paused, closed]
+        startedAt: { type: string, format: date-time }
+        endedAt:
+          type: [string, "null"]
+          format: date-time
+        consentNote:
+          type: [string, "null"]
+    ScanNode:
+      type: object
+      required: [id, ownerId, name, address, role, status, capabilities, createdAt]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        name: { type: string }
+        address: { type: string }
+        role: { type: string }
+        status:
+          type: string
+          enum: [online, offline, degraded]
+        lastHeartbeatAt:
+          type: [string, "null"]
+          format: date-time
+        capabilities:
+          type: array
+          items: { type: string }
+        createdAt: { type: string, format: date-time }
+    RfDevice:
+      type: object
+      required: [id, ownerId, address, vendor, protocol, firstSeenAt, lastSeenAt, favorite, metadata]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        address: { type: string }
+        vendor: { type: string }
+        protocol:
+          type: string
+          enum: [WiFi, BLE, CSI, system]
+        lastSignalDbm:
+          type: [number, "null"]
+        channel:
+          type: [string, "null"]
+        firstSeenAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        favorite: { type: boolean }
+        metadata:
+          type: object
+          additionalProperties: true
+    RfSighting:
+      type: object
+      required: [id, ownerId, deviceId, nodeId, observedAt]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        deviceId: { type: string }
+        nodeId: { type: string }
+        observedAt: { type: string, format: date-time }
+        signalDbm: { type: [number, "null"] }
+        distanceMeters: { type: [number, "null"] }
+        bearingDegrees: { type: [number, "null"] }
+        metadata: { type: object, additionalProperties: true }
+    SensingSnapshot:
+      type: object
+      required: [id, ownerId, nodeId, observedAt, metrics, uncertainty]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        nodeId: { type: string }
+        observedAt: { type: string, format: date-time }
+        metrics: { type: object, additionalProperties: true }
+        confidence: { type: [number, "null"] }
+        uncertainty: { type: object, additionalProperties: true }
+    SensingSummary:
+      type: object
+      required: [latest, history]
+      properties:
+        latest:
+          oneOf:
+            - $ref: "#/components/schemas/SensingSnapshot"
+            - type: "null"
+        history:
+          type: array
+          items: { $ref: "#/components/schemas/SensingSnapshot" }
+    CreateEvidence:
+      type: object
+      required: [kind, source]
+      properties:
+        sessionId: { type: [string, "null"] }
+        kind: { type: string }
+        source: { type: string }
+        confidence: { type: [number, "null"] }
+        uncertainty: { type: object, additionalProperties: true }
+        provenance: { type: object, additionalProperties: true }
+        payload: { type: object, additionalProperties: true }
+    EvidenceRecord:
+      type: object
+      required: [id, ownerId, kind, source, uncertainty, provenance, payload, createdAt]
+      properties:
+        id: { type: string }
+        ownerId: { type: string }
+        sessionId: { type: [string, "null"] }
+        kind: { type: string }
+        source: { type: string }
+        confidence: { type: [number, "null"] }
+        uncertainty: { type: object, additionalProperties: true }
+        provenance: { type: object, additionalProperties: true }
+        payload: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    TelemetryObservation:
+      type: object
+      properties:
+        address: { type: string }
+        vendor: { type: string }
+        signalDbm: { type: number }
+        channel: { type: string }
+        serviceUuids:
+          type: array
+          items: { type: string }
+        payload:
+          type: object
+          additionalProperties: true
+    TelemetryIngest:
+      type: object
+      required: [nodeId, ownerId, protocol]
+      properties:
+        nodeId: { type: string }
+        nodeName: { type: string }
+        ownerId: { type: string }
+        protocol:
+          type: string
+          enum: [wifi, ble, csi, system]
+        observedAt:
+          type: string
+          format: date-time
+        observations:
+          type: array
+          items:
+            $ref: "#/components/schemas/TelemetryObservation"
+        metrics:
+          type: object
+          additionalProperties:
+            oneOf:
+              - type: number
+              - type: string
+              - type: boolean
+        capabilities:
+          type: array
+          items: { type: string }
+    TelemetryAccepted:
+      type: object
+      required: [accepted, eventId]
+      properties:
+        accepted: { type: boolean }
+        eventId: { type: string }
 

@@ -1,5 +1,7 @@
+@layer theme, base, clerk, components, utilities;
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 @import 'tailwindcss';
+@import '@clerk/themes/shadcn.css';
 @import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
@@ -147,6 +149,9 @@ button { cursor: pointer; }
 .github-link { display:flex; align-items:center; gap:6px; color:#91aaa9; font:10px var(--app-font-mono); text-decoration:none; transition:color .2s; }
 .github-link:hover { color:#d7efec; }
 .avatar { width: 30px; height:30px; display:grid; place-items:center; border-radius:50%; color:hsl(var(--primary)); border:1px solid rgba(49, 205, 190, .35); background:rgba(49, 205, 190, .1); font: 11px 'Space Grotesk'; }
+.operator-menu { display:flex; align-items:center; gap:8px; }
+.session-button { border:0; background:transparent; color:#7fa09d; font:9px var(--app-font-mono); padding:4px 0; }
+.session-button:hover { color:#d7efec; }
 .content { max-width: 1500px; margin: 0 auto; padding: 30px 32px 44px; }
 .page-heading { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom: 24px; }
 .page-kicker { color: hsl(var(--primary)); font: 10px var(--app-font-mono); letter-spacing:.13em; text-transform:uppercase; margin-bottom:9px; }
@@ -209,6 +214,7 @@ button { cursor: pointer; }
 
 .history { padding:13px 17px 16px; }
 .chart { width:100%; height:145px; display:block; overflow:visible; }
+.chart-empty { min-height:145px; display:flex; align-items:center; justify-content:center; color:#6b8585; font:10px var(--app-font-mono); letter-spacing:.04em; }
 .chart-grid { stroke:rgba(120, 156, 159, .12); stroke-width:1; }
 .chart-line { fill:none; stroke:hsl(var(--primary)); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .chart-area { fill:url(#areaFill); }
@@ -320,6 +326,24 @@ button { cursor: pointer; }
 .hardware-note-body p { max-width:760px; color:#8da5a2; font-size:11px; line-height:1.6; margin:0; }
 .spin { animation: spin 1s linear infinite; }
 
+.landing-shell { min-height:100dvh; position:relative; overflow:hidden; background:radial-gradient(circle at 65% 22%, rgba(28,110,115,.2), transparent 32rem), hsl(var(--background)); }
+.landing-grid { position:absolute; inset:0; opacity:.22; background-image:linear-gradient(rgba(75,190,184,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(75,190,184,.08) 1px, transparent 1px); background-size:56px 56px; mask-image:linear-gradient(to bottom, black, transparent 85%); }
+.landing-inner { position:relative; z-index:1; min-height:100dvh; max-width:1080px; margin:0 auto; padding:32px 38px 24px; display:flex; flex-direction:column; }
+.landing-inner .brand { margin:0; }
+.landing-hero { max-width:720px; margin:auto 0; padding:70px 0 110px; }
+.landing-hero h1 { margin:0; color:#e1f1ef; font:700 clamp(42px, 7vw, 78px)/.98 'Space Grotesk'; letter-spacing:-.07em; }
+.landing-hero h1 span { color:hsl(var(--primary)); }
+.landing-hero p { max-width:600px; color:#8ea8a5; font-size:15px; line-height:1.7; margin:24px 0 0; }
+.landing-actions { display:flex; gap:10px; margin-top:30px; }
+.landing-actions .btn { min-height:42px; padding-left:16px; padding-right:16px; }
+.landing-secondary { background:rgba(255,255,255,.02); }
+.landing-proof { display:flex; flex-wrap:wrap; gap:19px; margin-top:34px; color:#718e8c; font:10px var(--app-font-mono); }
+.landing-proof span { display:inline-flex; align-items:center; gap:6px; }
+.landing-proof svg { color:hsl(var(--primary)); }
+.landing-footer { display:flex; justify-content:space-between; color:#587173; font:9px var(--app-font-mono); }
+.auth-shell { min-height:100dvh; display:grid; place-items:center; padding:24px; background:radial-gradient(circle at 50% 15%, rgba(28,110,115,.22), transparent 30rem), hsl(var(--background)); }
+.auth-shell::before { content:'BACKSPYNE / OPERATOR ACCESS'; position:fixed; top:24px; left:28px; color:#5d8986; font:10px var(--app-font-mono); letter-spacing:.14em; }
+
 @keyframes sweep { to { transform:rotate(360deg); } }
 @keyframes appear { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
 @keyframes spin { to { transform:rotate(360deg); } }
@@ -346,6 +370,7 @@ button { cursor: pointer; }
   .context-title { font-size:12px; }
   .connection { display:none; }
   .github-link span { display:none; }
+  .session-button { display:none; }
   .content { padding:22px 13px 30px; }
   .page-heading { display:block; margin-bottom:19px; }
   .header-actions { margin-top:17px; }
@@ -361,6 +386,11 @@ button { cursor: pointer; }
   .notes-grid { grid-template-columns:1fr; }
   .node-grid { grid-template-columns:1fr; }
   .signal-banner { align-items:flex-start; }
+  .landing-inner { padding:24px 20px; }
+  .landing-hero { padding:70px 0 80px; }
+  .landing-hero h1 { font-size:47px; }
+  .landing-hero p { font-size:13px; }
+  .landing-footer { gap:12px; flex-direction:column; }
 }
 @media (max-width: 420px) {
   .sensing-grid { grid-template-columns:1fr; }

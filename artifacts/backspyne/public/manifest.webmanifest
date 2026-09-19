@@ -1,0 +1,13 @@
+{
+  "name": "BackSpyne by PaperBagExpress",
+  "short_name": "BackSpyne",
+  "description": "Privacy-first RF observability for authorized environments.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#08131c",
+  "theme_color": "#08131c",
+  "icons": [
+    { "src": "./logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
