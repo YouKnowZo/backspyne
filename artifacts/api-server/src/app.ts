@@ -81,10 +81,12 @@ async function routeApi(
 
 app.use("/api", routeApi);
 
+const webDir = path.resolve(process.cwd(), "dist/web");
+
 let builtHtml: string | null = null;
 async function serveShell(_req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
-    if (!builtHtml) builtHtml = await readFile(path.resolve(process.cwd(), "public/index.html"), "utf8");
+    if (!builtHtml) builtHtml = await readFile(path.resolve(webDir, "index.html"), "utf8");
     res.type("html").send(builtHtml);
   } catch (error) {
     next(error);
@@ -98,7 +100,7 @@ app.get("/assets/:file", async (req, res, next) => {
       res.status(404).end();
       return;
     }
-    const filePath = path.resolve(process.cwd(), "public/assets", fileName);
+    const filePath = path.resolve(webDir, "assets", fileName);
     const contents = await readFile(filePath);
     res.type(path.extname(filePath)).set("Cache-Control", "public, max-age=31536000, immutable").send(contents);
   } catch (error) {
@@ -107,25 +109,26 @@ app.get("/assets/:file", async (req, res, next) => {
 });
 app.get("/manifest.webmanifest", async (_req, res, next) => {
   try {
-    res.type("application/manifest+json").send(await readFile(path.resolve(process.cwd(), "public/manifest.webmanifest")));
+    res.type("application/manifest+json").send(await readFile(path.resolve(webDir, "manifest.webmanifest")));
   } catch (error) { next(error); }
 });
 app.get("/sw.js", async (_req, res, next) => {
   try {
-    res.type("application/javascript").set("Service-Worker-Allowed", "/").send(await readFile(path.resolve(process.cwd(), "public/sw.js")));
+    res.type("application/javascript").set("Service-Worker-Allowed", "/").send(await readFile(path.resolve(webDir, "sw.js")));
   } catch (error) { next(error); }
 });
 app.get("/favicon.svg", async (_req, res, next) => {
   try {
-    res.type("image/svg+xml").send(await readFile(path.resolve(process.cwd(), "public/favicon.svg")));
+    res.type("image/svg+xml").send(await readFile(path.resolve(webDir, "favicon.svg")));
   } catch (error) { next(error); }
 });
 app.get("/logo.svg", async (_req, res, next) => {
   try {
-    res.type("image/svg+xml").send(await readFile(path.resolve(process.cwd(), "public/logo.svg")));
+    res.type("image/svg+xml").send(await readFile(path.resolve(webDir, "logo.svg")));
   } catch (error) { next(error); }
 });
 app.get("/", serveShell);
+app.get("/index.html", serveShell);
 app.get("/legal", serveShell);
 app.get("/user-portal", serveShell);
 app.get("/sign-in", serveShell);

@@ -16,7 +16,9 @@ export default defineConfig({
   },
   root: path.resolve(import.meta.dirname),
   build: {
-    outDir: path.resolve(import.meta.dirname, '../../public'),
+    // Built outside public/ so Vercel does not treat it as a static output
+    // directory; the Express function serves this directory at runtime.
+    outDir: path.resolve(import.meta.dirname, '../../dist/web'),
     emptyOutDir: true,
   },
 });
