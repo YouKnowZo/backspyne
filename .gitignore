@@ -54,4 +54,11 @@ Thumbs.db
 scanner/.venv/
 scanner/__pycache__/
 scanner/*.pyc
+scanner/**/__pycache__/
 scanner/.env
+/freebuff/
+/backspyne-app/
+/public/
+/artifacts/api-server/api/
+/artifacts/api-server/vercel.json
+/artifacts/backspyne/vercel.json

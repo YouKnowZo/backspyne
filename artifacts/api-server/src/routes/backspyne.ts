@@ -34,10 +34,13 @@ function emit(event: string, payload: unknown, ownerId?: string) {
 
 function verifyNodeSignature(req: import("express").Request, rawBody: string) {
   const configuredToken = process.env.BACKSPYNE_NODE_TOKEN;
-  if (!configuredToken) return false;
+  if (!configuredToken || configuredToken.length < 32) return false;
   const suppliedToken = req.header("x-backspyne-node-token") || "";
   const signature = req.header("x-backspyne-signature") || "";
-  if (suppliedToken !== configuredToken || !signature) return false;
+  if (!/^[a-f0-9]{64}$/i.test(signature)) return false;
+  const suppliedTokenBytes = Buffer.from(suppliedToken);
+  const configuredTokenBytes = Buffer.from(configuredToken);
+  if (suppliedTokenBytes.length !== configuredTokenBytes.length || !timingSafeEqual(suppliedTokenBytes, configuredTokenBytes)) return false;
   const digest = createHmac("sha256", configuredToken)
     .update(rawBody)
     .digest("hex");
@@ -46,9 +49,8 @@ function verifyNodeSignature(req: import("express").Request, rawBody: string) {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-function distanceFromSignal(signalDbm: number | null | undefined) {
-  if (typeof signalDbm !== "number" || !Number.isFinite(signalDbm)) return null;
-  return Math.max(0.5, Math.pow(10, (-45 - signalDbm) / 20));
+function validSignal(signalDbm: unknown): signalDbm is number {
+  return typeof signalDbm === "number" && Number.isFinite(signalDbm) && signalDbm >= -127 && signalDbm <= 20;
 }
 
 function parseDate(value: unknown, fallback: Date) {
@@ -69,7 +71,20 @@ router.get("/devices", requireAuth, async (req: AuthenticatedRequest, res, next)
       .where(eq(rfDevices.ownerId, req.userId!))
       .orderBy(desc(rfDevices.lastSeenAt))
       .limit(250);
-    res.json({ devices: rows });
+    const sightings = await db
+      .select({ deviceId: rfSightings.deviceId, signalQualityPercent: rfSightings.metadata })
+      .from(rfSightings)
+      .where(eq(rfSightings.ownerId, req.userId!))
+      .orderBy(desc(rfSightings.observedAt))
+      .limit(1000);
+    const latestQuality = new Map<string, number>();
+    for (const sighting of sightings) {
+      const meta = sighting.signalQualityPercent as Record<string, unknown>;
+      if (!latestQuality.has(sighting.deviceId) && typeof meta.signalQualityPercent === "number") {
+        latestQuality.set(sighting.deviceId, meta.signalQualityPercent);
+      }
+    }
+    res.json({ devices: rows.map((device) => ({ ...device, signalQualityPercent: latestQuality.get(device.id) ?? null })) });
   } catch (error) {
     next(error);
   }
@@ -192,7 +207,12 @@ router.get("/devices/:id/trail", requireAuth, async (req: AuthenticatedRequest, 
       .where(and(eq(rfSightings.deviceId, String(req.params.id)), eq(rfSightings.ownerId, req.userId!)))
       .orderBy(desc(rfSightings.observedAt))
       .limit(250);
-    res.json({ sightings });
+    res.json({ sightings: sightings.map((sighting) => ({
+      observedAt: sighting.observedAt,
+      signalDbm: sighting.signalDbm,
+      distanceMeters: null,
+      signalQualityPercent: (sighting.metadata as Record<string, unknown>).signalQualityPercent ?? null,
+    })) });
   } catch (error) {
     next(error);
   }
@@ -343,12 +363,16 @@ router.get("/stream", requireAuth, (req: AuthenticatedRequest, res) => {
 });
 
 router.post("/ingest/telemetry", async (req, res, next) => {
-  const rawBody = JSON.stringify(req.body ?? {});
+  const rawBody = ((req as typeof req & { rawBody?: Buffer }).rawBody ?? Buffer.from("{}")).toString("utf8");
   if (!verifyNodeSignature(req, rawBody)) {
     res.status(401).json({ error: "Invalid local-node signature" });
     return;
   }
   try {
+    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+      res.status(400).json({ error: "Telemetry body must be a JSON object" });
+      return;
+    }
     const body = req.body as {
       nodeId?: string;
       nodeName?: string;
@@ -359,6 +383,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
         address?: string;
         vendor?: string;
         signalDbm?: number;
+        signalQualityPercent?: number;
         channel?: string;
         serviceUuids?: string[];
         payload?: Record<string, unknown>;
@@ -366,16 +391,39 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       metrics?: Record<string, number | string | boolean>;
       capabilities?: string[];
     };
-    if (!body.nodeId || !body.ownerId || !body.protocol) {
-      res.status(400).json({ error: "nodeId, ownerId, and protocol are required" });
+    if (typeof body?.nodeId !== "string" || !body.nodeId.trim() || typeof body.ownerId !== "string" || !body.ownerId.trim() || !["wifi", "ble", "csi", "system"].includes(body.protocol || "")) {
+      res.status(400).json({ error: "nodeId, ownerId, and a supported protocol are required" });
+      return;
+    }
+    if (body.nodeId.length > 160 || body.ownerId.length > 255 || (body.observations !== undefined && (!Array.isArray(body.observations) || body.observations.length > 500))) {
+      res.status(413).json({ error: "Telemetry payload exceeds allowed limits" });
       return;
     }
     const configuredOwnerId = process.env.BACKSPYNE_NODE_OWNER_ID;
-    if (configuredOwnerId && configuredOwnerId !== body.ownerId) {
+    if (!configuredOwnerId) {
+      res.status(503).json({ error: "Node owner binding is not configured" });
+      return;
+    }
+    if (configuredOwnerId !== body.ownerId) {
       res.status(403).json({ error: "Node is not assigned to this operator" });
       return;
     }
+    const nodeProtocol = body.protocol as "wifi" | "ble" | "csi" | "system";
     const now = new Date();
+    const observedAt = parseDate(body.observedAt, now);
+    if (Math.abs(now.getTime() - observedAt.getTime()) > 5 * 60_000) {
+      res.status(400).json({ error: "Telemetry timestamp is outside the permitted 5-minute window" });
+      return;
+    }
+    const currentNode = await db
+      .select({ ownerId: scanNodes.ownerId })
+      .from(scanNodes)
+      .where(eq(scanNodes.id, body.nodeId))
+      .limit(1);
+    if (currentNode[0] && currentNode[0].ownerId !== body.ownerId) {
+      res.status(403).json({ error: "Node ID is already assigned to another operator" });
+      return;
+    }
     await db
       .insert(scanNodes)
       .values({
@@ -383,7 +431,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
         ownerId: body.ownerId,
         name: body.nodeName?.slice(0, 120) || body.nodeId,
         address: req.ip || "local",
-        role: body.protocol.toUpperCase(),
+        role: nodeProtocol.toUpperCase(),
         status: "online",
         lastHeartbeatAt: now,
       })
@@ -398,11 +446,11 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       });
 
     const normalizedProtocol =
-      body.protocol === "wifi"
+      nodeProtocol === "wifi"
         ? ("WiFi" as const)
-        : body.protocol === "ble"
+        : nodeProtocol === "ble"
           ? ("BLE" as const)
-          : body.protocol === "csi"
+          : nodeProtocol === "csi"
             ? ("CSI" as const)
             : ("system" as const);
     const event = {
@@ -410,14 +458,14 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       ownerId: body.ownerId,
       nodeId: body.nodeId,
       protocol: normalizedProtocol,
-      observedAt: parseDate(body.observedAt, now),
+      observedAt,
       observations: body.observations || [],
       metrics: body.metrics || {},
     };
     await db.insert(telemetryEvents).values(event);
 
     for (const observation of event.observations) {
-      if (!observation.address) continue;
+      if (typeof observation.address !== "string" || !/^[0-9A-Fa-f:.-]{1,80}$/.test(observation.address)) continue;
       const deviceId = id("device");
       const existing = await db
         .select({ id: rfDevices.id })
@@ -429,20 +477,21 @@ router.post("/ingest/telemetry", async (req, res, next) => {
           ),
         )
         .limit(1);
+      const source = observation.payload?.source;
+      const observationProtocol = source === "ble_adapter" ? "BLE" as const : source === "wifi_os_api" ? "WiFi" as const : normalizedProtocol;
+      const observationPayload = { ...(observation.payload || {}) };
+      delete observationPayload.source;
       const values = {
         ownerId: body.ownerId,
-        address: observation.address,
-        vendor: observation.vendor || "Unknown vendor",
-        protocol:
-          observation.payload?.source === "ble_adapter"
-            ? ("BLE" as const)
-            : ("WiFi" as const),
-        lastSignalDbm: observation.signalDbm ?? null,
-        channel: observation.channel || null,
+        address: observation.address.slice(0, 80),
+        vendor: typeof observation.vendor === "string" ? observation.vendor.slice(0, 120) : "Unknown vendor",
+        protocol: observationProtocol,
+        lastSignalDbm: validSignal(observation.signalDbm) ? observation.signalDbm : null,
+        channel: typeof observation.channel === "string" ? observation.channel.slice(0, 40) : null,
         lastSeenAt: event.observedAt,
         metadata: {
           serviceUuids: observation.serviceUuids || [],
-          payload: observation.payload || {},
+          payload: observationPayload,
         },
       };
       if (existing[0]) {
@@ -456,14 +505,14 @@ router.post("/ingest/telemetry", async (req, res, next) => {
         deviceId: existing[0]?.id ?? deviceId,
         nodeId: body.nodeId,
         observedAt: event.observedAt,
-        signalDbm: observation.signalDbm ?? null,
-        distanceMeters: distanceFromSignal(observation.signalDbm),
-        metadata: { channel: observation.channel || null },
+        signalDbm: validSignal(observation.signalDbm) ? observation.signalDbm : null,
+        distanceMeters: null,
+        metadata: { channel: typeof observation.channel === "string" ? observation.channel.slice(0, 40) : null, signalQualityPercent: typeof observation.signalQualityPercent === "number" && observation.signalQualityPercent >= 0 && observation.signalQualityPercent <= 100 ? observation.signalQualityPercent : null },
       });
     }
 
     if (Object.keys(event.metrics).length) {
-      const confidence = typeof event.metrics.confidence === "number" ? event.metrics.confidence : null;
+      const confidence = typeof event.metrics.confidence === "number" && Number.isFinite(event.metrics.confidence) ? event.metrics.confidence : null;
       await db.insert(sensingSnapshots).values({
         id: id("sensing"),
         ownerId: body.ownerId,

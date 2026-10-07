@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import platform
@@ -86,6 +85,8 @@ class WifiObserver:
             output = _run([
                 "nmcli",
                 "-t",
+                "--escape",
+                "yes",
                 "-f",
                 "BSSID,SSID,SIGNAL,CHAN,SECURITY",
                 "dev",
@@ -107,9 +108,9 @@ class WifiObserver:
                     {
                         "address": address.upper(),
                         "vendor": vendor_for(address),
-                        "signalDbm": round(signal_percent / 2 - 100, 1) if signal_percent is not None else None,
+                        "signalQualityPercent": int(signal_percent) if signal_percent is not None else None,
                         "channel": channel or None,
-                        "payload": {"ssid": ssid, "security": security},
+                        "payload": {"ssid": ssid, "security": security, "source": "wifi_os_api"},
                     }
                 )
             if observations:
@@ -121,6 +122,10 @@ class WifiObserver:
                 (line.split()[-1] for line in output.splitlines() if line.strip().startswith("Interface ")),
                 None,
             )
+            if interface:
+                scan_state = _run(["iw", "dev", interface, "link"])
+                if "Connected to " in scan_state:
+                    LOGGER.warning("Linux WiFi interface %s is associated with a network; scan may be constrained", interface)
             if not interface:
                 return []
             scan = _run(["iw", "dev", interface, "scan"])
@@ -132,7 +137,7 @@ class WifiObserver:
                     if current:
                         observations.append(current)
                     address = bss.group(1).upper()
-                    current = {"address": address, "vendor": vendor_for(address), "payload": {}}
+                    current = {"address": address, "vendor": vendor_for(address), "payload": {"source": "wifi_os_api"}}
                     continue
                 if current:
                     ssid = re.search(r"^\s*SSID:\s*(.*)$", line)
@@ -142,6 +147,8 @@ class WifiObserver:
                     if signal:
                         current["signalDbm"] = float(signal.group(1))
                     channel = re.search(r"DS Parameter set: channel (\d+)", line)
+                    if not channel:
+                        channel = re.search(r"primary channel:\s*(\d+)", line, re.IGNORECASE)
                     if channel:
                         current["channel"] = channel.group(1)
             if current:
@@ -153,27 +160,35 @@ class WifiObserver:
         return []
 
     def _macos(self) -> list[dict[str, Any]]:
-        airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
-        if not shutil.which(airport) and not shutil.which("airport"):
-            LOGGER.warning("macOS airport scanner is unavailable; WiFi discovery returned no results")
+        try:
+            import CoreWLAN
+        except ImportError:
+            LOGGER.warning("macOS WiFi scanning requires PyObjC CoreWLAN; install requirements.txt")
             return []
-        output = _run([airport if shutil.which(airport) else "airport", "-s"])
-        observations = []
-        for line in output.splitlines()[1:]:
-            match = re.match(r"^\s*([0-9A-Fa-f:]{17})\s+(.+?)\s+(-?\d+)\s+(\d+)", line)
-            if match:
-                address, ssid, signal, channel = match.groups()
-                observations.append(
-                    {
-                        "address": address.upper(),
-                        "vendor": vendor_for(address),
-                        "signalDbm": float(signal),
-                        "channel": channel,
-                        "payload": {"ssid": ssid.strip()},
-                    }
-                )
+        interface = CoreWLAN.CWInterface.interface()
+        networks, error = interface.scanForNetworksWithName_includeHidden_error_(None, True, None)
+        if error:
+            LOGGER.warning("CoreWLAN scan failed: %s", error)
+            return []
+        observations: list[dict[str, Any]] = []
+        for network in networks or []:
+            address = network.bssid()
+            if not address:
+                continue
+            channel = network.wlanChannel()
+            observations.append({
+                "address": address.upper(),
+                "vendor": vendor_for(address),
+                "signalDbm": int(network.rssiValue()),
+                "channel": str(channel.channelNumber()) if channel else None,
+                "payload": {
+                    "ssid": network.ssid() or "",
+                    "security": str(network.security()) if hasattr(network, "security") else "unknown",
+                    "source": "wifi_os_api",
+                },
+            })
         if not observations:
-            LOGGER.warning("macOS WiFi adapter returned no nearby access points")
+            LOGGER.warning("CoreWLAN returned no nearby access points; confirm Location Services permission")
         return observations
 
     def _windows(self) -> list[dict[str, Any]]:
@@ -181,6 +196,8 @@ class WifiObserver:
             LOGGER.warning("Windows netsh is unavailable; WiFi discovery returned no results")
             return []
         output = _run(["netsh", "wlan", "show", "networks", "mode=bssid"])
+        if not re.search(r"BSSID\s+\d+\s*:", output, re.IGNORECASE):
+            output = _run(["netsh", "wlan", "show", "networks", "mode=bssid"], timeout=30.0)
         observations: list[dict[str, Any]] = []
         current_ssid = ""
         current: dict[str, Any] | None = None
@@ -193,12 +210,12 @@ class WifiObserver:
                 if current:
                     observations.append(current)
                 address = bssid.group(1).upper()
-                current = {"address": address, "vendor": vendor_for(address), "payload": {"ssid": current_ssid}}
+                current = {"address": address, "vendor": vendor_for(address), "payload": {"ssid": current_ssid, "source": "wifi_os_api"}}
                 continue
             if current:
                 signal = re.search(r"Signal\s*:\s*(\d+)%", line)
                 if signal:
-                    current["signalDbm"] = round(float(signal.group(1)) / 2 - 100, 1)
+                    current["signalQualityPercent"] = int(signal.group(1))
                 channel = re.search(r"Channel\s*:\s*(\d+)", line)
                 if channel:
                     current["channel"] = channel.group(1)
@@ -234,6 +251,7 @@ class BleObserver:
                     "signalDbm": getattr(advertisement, "rssi", None),
                     "serviceUuids": list(getattr(advertisement, "service_uuids", []) or []),
                     "payload": {
+                        "source": "ble_adapter",
                         "name": getattr(device, "name", None),
                         "localName": getattr(advertisement, "local_name", None),
                         "manufacturerData": {
@@ -284,26 +302,3 @@ class CsiObserver:
             if isinstance(payload, dict):
                 readings.append(payload)
         return readings
-
-
-def simulated_observations() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    return (
-        [
-            {
-                "address": "44:D8:84:20:4B:10",
-                "vendor": "Espressif Inc.",
-                "signalDbm": -54,
-                "channel": "6",
-                "payload": {"ssid": "authorized-lab"},
-            }
-        ],
-        [
-            {
-                "address": "F0:D2:F1:90:14:11",
-                "vendor": "Samsung Electronics",
-                "signalDbm": -67,
-                "serviceUuids": [],
-                "payload": {"name": "approved-sensor"},
-            }
-        ],
-    )

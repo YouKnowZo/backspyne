@@ -17,28 +17,14 @@ BackSpyne API.
    - Windows PowerShell: `./start.ps1`
    - Windows Command Prompt: `start.bat`
 
-The bridge defaults to `BACKSPYNE_MODE=live` and uses the computer's real
-WiFi/Bluetooth adapters. Set `BACKSPYNE_MODE=simulate` only for a deliberate
-signed connectivity test; simulated observations are never presented by the
-operator dashboard as live hardware telemetry.
+The bridge accepts only `BACKSPYNE_MODE=live`. Synthetic observations are disabled to prevent test data from being mistaken for measurements.
 
 ## Live adapters
 
-- **BLE:** `bleak` performs a normal OS-approved scan. The user must grant
-  Bluetooth permission and the host adapter must be available.
-- **WiFi:** Linux uses `nmcli` first and `iw` as a fallback; macOS uses the
-  system `airport` command; Windows uses `netsh wlan`. These are observation
-  APIs only; the bridge does not enable monitor mode, inject frames, or bypass
-  permissions.
-- **ESP32/CSI:** Set `BACKSPYNE_CSI_SERIAL_PORT` to a serial port that emits one
-  JSON object per line, for example
-  `{"amplitudes":[0.8,1.1,0.9],"timestamp":"..."}`. CSI values are used only
-  for environmental variance metrics.
+- **BLE:** `bleak` performs an OS-approved active advertisement scan. The host adapter, runtime permissions and OS Bluetooth service must be available. BLE privacy addresses can rotate and many devices do not advertise.
+- **WiFi:** Linux uses NetworkManager `nmcli` or `iw`; macOS uses Apple's CoreWLAN framework through PyObjC (location permission may be required); Windows uses `netsh wlan`. Results are nearby AP beacons, not all client devices. Access-point scans can be limited by the associated connection, adapter/driver and OS policy. Windows/Linux OS signal quality is kept as percent where provided and never mislabeled as dBm. The bridge does not enable monitor mode, inject frames, or bypass permissions.
+- **ESP32/CSI:** Optional serial JSON-lines input can provide an `amplitudes` list for measured amplitude variance. It is not a person/presence/motion/medical sensor, and no inference is made from it. UDP CSI is not implemented.
 
-## Privacy and model boundary
+## Privacy, use and measurement limits
 
-The bridge sends only the configured owner ID, node ID, observed addresses,
-signal metadata, and conservative environmental heuristics. It does not send
-camera or microphone content. Presence and motion outputs are explicitly
-non-medical heuristics; no heart-rate, apnea, or fall claim is made without a
-validated model and approved data collection protocol.
+Collect only on infrastructure and locations for which you have authorization and required consent. The bridge sends WiFi AP/BLE advertiser addresses, vendor guesses, signal/channel/SSID or BLE advertisement metadata, owner/node IDs, timestamps and measured aggregates to the configured API. Treat identifiers and SSIDs as potentially sensitive personal data: choose a lawful basis, provide required notices, minimize/retain/delete data appropriately, and secure access. No camera or microphone data is accessed. There is no person identity, tracking, distance, direction, occupancy, motion, or health inference. This software is not legal advice, and these notes are not a substitute for legal review or a jurisdiction-specific privacy policy. Operators assume responsibility for lawful use and their published terms.

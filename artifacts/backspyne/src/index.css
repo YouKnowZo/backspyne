@@ -345,6 +345,11 @@ button { cursor: pointer; }
 .landing-footer { display:flex; justify-content:space-between; color:#587173; font:9px var(--app-font-mono); }
 .auth-shell { min-height:100dvh; display:grid; place-items:center; padding:24px; background:radial-gradient(circle at 50% 15%, rgba(28,110,115,.22), transparent 30rem), hsl(var(--background)); }
 .auth-shell::before { content:'BACKSPYNE / OPERATOR ACCESS'; position:fixed; top:24px; left:28px; color:#5d8986; font:10px var(--app-font-mono); letter-spacing:.14em; }
+.legal-page { max-width: 850px; margin: 0 auto; padding: 42px 24px 70px; color: #a2b9b5; font-size: 14px; line-height: 1.75; }
+.legal-page h1, .legal-page h2 { color: #e1f1ef; font-family: 'Space Grotesk', sans-serif; }
+.legal-page h1 { font-size: clamp(28px, 5vw, 44px); }
+.legal-page h2 { margin-top: 32px; font-size: 20px; }
+.legal-back, .disclaimer a, .legal-link { color: #55dfd1; }
 
 @keyframes sweep { to { transform:rotate(360deg); } }
 @keyframes appear { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }

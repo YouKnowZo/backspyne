@@ -39,7 +39,9 @@ export function clerkProxyMiddleware(): RequestHandler {
     on: {
       proxyReq: (proxyReq, req) => {
         const protocol = req.headers["x-forwarded-proto"] || "https";
-        const host = getClerkProxyHost(req) || "";
+        const host = process.env.FRONTEND_ORIGIN
+          ? new URL(process.env.FRONTEND_ORIGIN).host
+          : getClerkProxyHost(req) || "";
         proxyReq.setHeader(
           "Clerk-Proxy-Url",
           `${protocol}://${host}${CLERK_PROXY_PATH}`,

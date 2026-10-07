@@ -25,28 +25,35 @@ class Config:
     @classmethod
     def from_environment(cls) -> "Config":
         mode = os.getenv("BACKSPYNE_MODE", "live").strip().lower()
-        if mode not in {"simulate", "live"}:
-            raise ValueError("BACKSPYNE_MODE must be either 'simulate' or 'live'")
+        if mode != "live":
+            raise ValueError("Only BACKSPYNE_MODE=live is supported; synthetic telemetry is disabled")
 
         owner_id = os.getenv("BACKSPYNE_OWNER_ID", "").strip()
         node_token = os.getenv("BACKSPYNE_NODE_TOKEN", "").strip()
-        if not owner_id:
-            raise ValueError("BACKSPYNE_OWNER_ID is required")
-        if not node_token:
-            raise ValueError("BACKSPYNE_NODE_TOKEN is required")
+        if not owner_id or owner_id.startswith("replace_with_"):
+            raise ValueError("Set BACKSPYNE_OWNER_ID to your real Clerk user ID")
+        if not node_token or node_token.startswith("replace_with_") or len(node_token) < 32:
+            raise ValueError("Set BACKSPYNE_NODE_TOKEN to the same random secret (at least 32 characters) configured on the API")
 
         node_id = os.getenv("BACKSPYNE_NODE_ID", "").strip() or socket.gethostname()
+        api_url = os.getenv("BACKSPYNE_API_URL", "http://127.0.0.1:8080/api").strip().rstrip("/")
+        if not api_url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+            raise ValueError("BACKSPYNE_API_URL must use HTTPS outside localhost")
+        try:
+            interval_seconds = float(os.getenv("BACKSPYNE_INTERVAL_SECONDS", "8"))
+        except ValueError as error:
+            raise ValueError("BACKSPYNE_INTERVAL_SECONDS must be a number") from error
+        if interval_seconds < 2 or interval_seconds > 3600:
+            raise ValueError("BACKSPYNE_INTERVAL_SECONDS must be between 2 and 3600")
         return cls(
-            api_url=os.getenv("BACKSPYNE_API_URL", "http://127.0.0.1:8080/api").rstrip("/"),
+            api_url=api_url,
             owner_id=owner_id,
             node_token=node_token,
             node_id=node_id,
             node_name=os.getenv("BACKSPYNE_NODE_NAME", node_id).strip() or node_id,
             mode=mode,
-            interval_seconds=max(2.0, float(os.getenv("BACKSPYNE_INTERVAL_SECONDS", "8"))),
+            interval_seconds=interval_seconds,
             csi_serial_port=os.getenv("BACKSPYNE_CSI_SERIAL_PORT", "").strip() or None,
             csi_baudrate=int(os.getenv("BACKSPYNE_CSI_BAUDRATE", "115200")),
-            csi_udp_port=int(os.getenv("BACKSPYNE_CSI_UDP_PORT"))
-            if os.getenv("BACKSPYNE_CSI_UDP_PORT", "").strip()
-            else None,
+            csi_udp_port=None,
         )

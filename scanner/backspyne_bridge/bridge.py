@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,7 +13,7 @@ import requests
 
 from .config import Config
 from .inference import derive_metrics
-from .observers import BleObserver, CsiObserver, WifiObserver, simulated_observations
+from .observers import BleObserver, CsiObserver, WifiObserver
 
 LOGGER = logging.getLogger("backspyne.bridge")
 
@@ -57,19 +58,25 @@ class Bridge:
         self.api = ApiClient(config)
 
     async def collect(self) -> dict[str, Any]:
-        if self.config.mode == "simulate":
-            wifi, ble = simulated_observations()
-        else:
-            wifi = await asyncio.to_thread(self.wifi.scan)
-            ble = await self.ble.scan()
+        wifi, ble = await asyncio.gather(
+            asyncio.to_thread(self.wifi.scan),
+            self.ble.scan(),
+        )
 
         csi_rows = await asyncio.to_thread(self.csi.read)
-        csi_values = [
-            float(value)
-            for row in csi_rows
-            for value in row.get("amplitude", row.get("amplitudes", []))
-            if isinstance(value, (int, float))
-        ]
+        csi_values: list[float] = []
+        for row in csi_rows:
+            values = row.get("amplitude", row.get("amplitudes", []))
+            if isinstance(values, (int, float)) and not isinstance(values, bool):
+                values = [values]
+            if isinstance(values, list):
+                csi_values.extend(
+                    float(value)
+                    for value in values
+                    if isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(float(value))
+                )
         LOGGER.info(
             "scan cycle: wifi=%d ble=%d csi=%d mode=%s",
             len(wifi),
@@ -83,7 +90,6 @@ class Bridge:
                 "and that the bridge is running in live mode"
             )
         metrics = derive_metrics(wifi, ble, csi_values)
-        metrics["csiSamples"] = len(csi_values)
         metrics["collectionMode"] = self.config.mode
         return {
             "nodeId": self.config.node_id,
@@ -91,10 +97,8 @@ class Bridge:
             "ownerId": self.config.owner_id,
             "protocol": "system",
             "observedAt": datetime.now(UTC).isoformat(),
-            "observations": [
-                *[{**row, "payload": {**row.get("payload", {}), "source": "wifi_os_api"}} for row in wifi],
-                *[{**row, "payload": {**row.get("payload", {}), "source": "ble_adapter"}} for row in ble],
-            ],
+            "capabilities": ["wifi_os_scan", "ble_advertisement_scan", *(["csi_serial"] if self.config.csi_serial_port else [])],
+            "observations": [*wifi, *ble],
             "metrics": metrics,
         }
 
@@ -107,12 +111,10 @@ class Bridge:
         )
         while True:
             payload = await self.collect()
-            if self.api.send(payload):
+            if await asyncio.to_thread(self.api.send, payload):
                 LOGGER.info(
-                    "uploaded %s observations; presence=%s confidence=%s",
+                    "uploaded %s measured observations",
                     len(payload["observations"]),
-                    payload["metrics"]["presenceProbability"],
-                    payload["metrics"]["confidence"],
                 )
             await asyncio.sleep(self.config.interval_seconds)
 

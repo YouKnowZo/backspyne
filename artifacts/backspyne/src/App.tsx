@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider, Show, SignIn, SignUp, useClerk, useUser } from '@clerk/react';
-import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { ErrorBoundary } from './components/error-boundary';
 import { Toaster } from './components/ui/toaster';
@@ -18,16 +17,18 @@ import NotFound from './pages/not-found';
 import { Redirect, Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 type RFDevice = {
-  id: string; mac: string; vendor: string; protocol: 'WiFi' | 'BLE';
-  signal: number; maxProximity: string; status: 'active' | 'idle' | 'ghost';
+  id: string; mac: string; vendor: string; protocol: 'WiFi' | 'BLE' | 'CSI' | 'system';
+  signal: number | null; signalQualityPercent: number | null; maxProximity: string; status: 'active' | 'idle' | 'ghost';
   lastSeen: string; firstSeen: string; node: string; channel: string;
-  encrypted: boolean; favorite: boolean;
+  favorite: boolean;
 };
 type ScanNode = { id: string; name: string; address: string; status: 'online' | 'offline'; lastSeen: string; devices: number; role: string };
-type SensingMetric = { label: string; value: string; unit: string; confidence: number; status: string; trend: string };
+type SensingMetric = { label: string; value: string; unit: string; status: string; trend: string };
 type SensingSnapshot = { id: string; observedAt: string; metrics: Record<string, unknown>; confidence?: number | null; uncertainty?: Record<string, unknown> };
 type DeviceSighting = { observedAt: string; signalDbm: number | null; distanceMeters: number | null };
 type HardwareStatus = 'ready' | 'permission' | 'connected' | 'limited' | 'unsupported';
+type ApiDevice = Record<string, unknown>;
+type ApiNode = Record<string, unknown>;
 type HardwareCapability = {
   id: string;
   label: string;
@@ -56,10 +57,8 @@ type NavView = 'dashboard' | 'ledger' | 'sensing' | 'nodes' | 'hardware';
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
-const clerkPubKey = publishableKeyFromHost(window.location.hostname, import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
-const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
-
-if (!clerkPubKey) throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in the environment.');
+const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY || '';
+const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL || undefined;
 
 const clerkAppearance = {
   theme: shadcn,
@@ -248,7 +247,9 @@ async function scanHardwareCapabilities(): Promise<HardwareCapability[]> {
 }
 
 function AppIcon({ protocol, className = '' }: { protocol: RFDevice['protocol']; className?: string }) {
-  return protocol === 'BLE' ? <Bluetooth className={className} /> : <Wifi className={className} />;
+  if (protocol === 'BLE') return <Bluetooth className={className} />;
+  if (protocol === 'WiFi') return <Wifi className={className} />;
+  return <Radio className={className} />;
 }
 
 function Brand() {
@@ -274,18 +275,18 @@ function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMo
         <div className="adapter-line"><span className={`pulse-dot ${liveMode ? '' : 'amber'}`} /> <span>Adapter status</span><span style={{ marginLeft: 'auto', color: liveMode ? '#79d8cf' : '#d6b064', fontSize: 10 }}>{liveMode ? 'LIVE' : apiConnected ? 'READY' : 'OFFLINE'}</span></div>
         <p className="adapter-caption">{liveMode ? 'Signed node telemetry is connected to this operator session.' : apiConnected ? 'Operator API is connected; waiting for an authorized node heartbeat.' : 'Operator API is unavailable. Reconnect to load persisted telemetry.'}</p>
       </div>
-      <div className="disclaimer"><strong>Authorized environments only.</strong><br />BackSpyne is a defensive observability surface. Respect local law, consent, and scope.</div>
+      <div className="disclaimer"><strong>Authorized environments only.</strong><br />Collect only where you have permission. No person tracking, identification, occupancy, or health claims. See <a href="/legal">Legal & Privacy</a>.</div>
     </div>
   </aside>;
 }
 
- function Topbar({ view, scanning, onToggleScan, onOpenMenu, sessionId, onSignOut }: { view: NavView; scanning: boolean; onToggleScan: () => void; onOpenMenu: () => void; sessionId: string | null; onSignOut: () => Promise<void> }) {
+ function Topbar({ view, scanning, onOpenMenu, sessionId, onSignOut }: { view: NavView; scanning: boolean; onOpenMenu: () => void; sessionId: string | null; onSignOut: () => Promise<void> }) {
   const { user } = useUser();
-  const titles: Record<NavView, [string, string]> = { dashboard: ['Operations / overview', 'Local RF environment'], ledger: ['Operations / ledger', 'Discovered device inventory'], sensing: ['Operations / sensing', 'Camera-free inference layer'], nodes: ['Operations / nodes', 'Sensor network topology'], hardware: ['Operations / hardware', 'Device capability bridge'] };
+  const titles: Record<NavView, [string, string]> = { dashboard: ['Operations / overview', 'Local RF environment'], ledger: ['Operations / ledger', 'Discovered device inventory'], sensing: ['Operations / sensing', 'Measured radio adapter data'], nodes: ['Operations / nodes', 'Sensor network topology'], hardware: ['Operations / hardware', 'Device capability bridge'] };
   const operatorName = user?.firstName || user?.primaryEmailAddress?.emailAddress || 'Operator';
   return <header className="topbar">
     <div className="topbar-context"><button className="menu-button" data-testid="button-open-menu" onClick={onOpenMenu}><Menu size={20} /></button><div className="context-line" /><div><div className="context-title">{titles[view][0]}</div><div className="context-sub">{titles[view][1]}</div></div></div>
-     <div className="topbar-actions"><a className="github-link" href="https://github.com/youknowzo" target="_blank" rel="noreferrer"><Github size={14} /> <span>youknowzo</span></a><div className="connection"><span className="pulse-dot" /> {sessionId ? 'Session active · encrypted' : 'Local session · encrypted'}</div><button data-testid="button-global-scan" className={`btn scan-toggle ${scanning ? 'is-scanning' : ''}`} onClick={onToggleScan}>{scanning ? <><Activity size={14} /> Scanning</> : <><Minus size={14} /> Paused</>}</button><div className="operator-menu"><div className="avatar" title={operatorName}>{operatorName.slice(0, 2).toUpperCase()}</div><button className="session-button" data-testid="button-sign-out" onClick={() => void onSignOut()}><LogOut size={13} /> Sign out</button></div></div>
+     <div className="topbar-actions"><a className="github-link" href="https://github.com/youknowzo" target="_blank" rel="noreferrer"><Github size={14} /> <span>youknowzo</span></a><div className="connection"><span className="pulse-dot" /> {sessionId ? 'Session active' : 'Session not persisted'}</div><button type="button" data-testid="button-global-scan" className={`btn scan-toggle ${scanning ? 'is-scanning' : ''}`} aria-live="polite" title="Scanner state reflects authorized local relay heartbeat">{scanning ? <><Activity size={14} /> Relay active</> : <><Minus size={14} /> Awaiting relay</>}</button><div className="operator-menu"><div className="avatar" title={operatorName}>{operatorName.slice(0, 2).toUpperCase()}</div><button className="session-button" data-testid="button-sign-out" onClick={() => void onSignOut()}><LogOut size={13} /> Sign out</button></div></div>
   </header>;
 }
 
@@ -308,17 +309,17 @@ function MetricCard({ label, value, note, icon: Icon, accent = false }: { label:
 function RadarView({ devices, selectedId, onSelect }: { devices: RFDevice[]; selectedId: string; onSelect: (id: string) => void }) {
   const positions = [[30, 26], [64, 30], [73, 63], [41, 76], [22, 57], [80, 45]];
   return <div className="radar-wrap">
-    <div className="radar"><span className="radar-ring-label top">0°</span><span className="radar-ring-label right">90°</span><span className="radar-ring-label bottom">180°</span><span className="radar-ring-label left">270°</span><span className="radar-center" />
+    <div className="radar" aria-label="Schematic display of detected targets; no direction or distance is measured"><span className="radar-ring-label top">—</span><span className="radar-ring-label right">—</span><span className="radar-ring-label bottom">—</span><span className="radar-ring-label left">—</span><span className="radar-center" />
       {devices.map((device, index) => <button key={device.id} data-testid={`radar-target-${device.id}`} aria-label={`Select ${device.vendor}`} className={`target ${device.status === 'ghost' ? 'ghost' : ''} ${device.id === selectedId ? 'selected' : ''}`} style={{ left: `${positions[index % positions.length][0]}%`, top: `${positions[index % positions.length][1]}%` }} onClick={() => onSelect(device.id)}><span className="target-label">{device.id === selectedId ? 'LOCKED' : device.mac.slice(-5)}</span></button>)}
     </div>
-    <div className="radar-footer"><div className="legend"><span><i />active</span><span><i className="amber" />locked</span><span><i className="gray" />ghost</span></div><span>radius 25 m · north relay</span></div>
+    <div className="radar-footer"><div className="legend"><span><i />active</span><span><i className="amber" />locked</span><span><i className="gray" />ghost</span></div><span>target positions are schematic · no bearing measurement</span></div>
   </div>;
 }
 
 function DeviceRows({ devices, selectedId, onSelect, onFavorite }: { devices: RFDevice[]; selectedId: string; onSelect: (id: string) => void; onFavorite: (id: string) => void }) {
   if (!devices.length) return <div className="empty-state"><Search size={23} /><h3>No targets in this slice</h3><p>Try a different query or include ghost targets.</p></div>;
   return <><div className="list-head"><span /><span>Target</span><span>Protocol</span><span>Signal</span><span>State</span><span /></div><div className="device-list">{devices.map(device => <div key={device.id} data-testid={`row-device-${device.id}`} className={`device-row ${device.id === selectedId ? 'selected' : ''}`} onClick={() => onSelect(device.id)}>
-    <div className="device-icon"><AppIcon protocol={device.protocol} /></div><div><div className="device-name">{device.vendor}</div><div className="device-mac">{device.mac}</div></div><div><div className="device-name" style={{ fontWeight: 500 }}>{device.protocol}</div><div className="device-meta">{device.channel}</div></div><div className="signal-cell">{device.signal}<span className="signal-bar"><b style={{ width: `${Math.max(8, 100 - (Math.abs(device.signal) - 35) * 1.65)}%` }} /></span></div><div className={`state ${device.status}`}>{device.status}</div><button className="icon-button" aria-label={device.favorite ? 'Remove favorite' : 'Add favorite'} data-testid={`button-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button>
+    <div className="device-icon"><AppIcon protocol={device.protocol} /></div><div><div className="device-name">{device.vendor}</div><div className="device-mac">{device.mac}</div></div><div><div className="device-name" style={{ fontWeight: 500 }}>{device.protocol}</div><div className="device-meta">{device.channel}</div></div><div className="signal-cell">{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null && <span> {device.signalQualityPercent}%</span>}<span className="signal-bar">{device.signal !== null && <b style={{ width: `${Math.max(8, Math.min(100, 100 - (Math.abs(device.signal) - 35) * 1.65))}%` }} />}</span></div><div className={`state ${device.status}`}>{device.status}</div><button className="icon-button" aria-label={device.favorite ? 'Remove favorite' : 'Add favorite'} data-testid={`button-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button>
   </div>)}</div></>;
 }
 
@@ -330,15 +331,15 @@ function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite,
   const selected = devices.find(d => d.id === selectedId);
   const visibleDevices = devices.filter(d => d.status !== 'ghost');
   const activeNodes = nodes.filter(node => node.status === 'online').length;
-  const signalFloor = visibleDevices.length ? String(Math.min(...visibleDevices.map(device => device.signal))) : '—';
-  const encryptedCount = devices.filter(device => device.encrypted).length;
-  const protectedLinks = devices.length ? `${Math.round((encryptedCount / devices.length) * 100)}%` : '—';
-  const historyValues = trail.length > 1 ? [...trail].reverse().map(sighting => Math.abs(sighting.signalDbm ?? -92)) : [];
-  return <><div className="page-heading"><div><div className="page-kicker">RF command surface / 01</div><h1>Know what is nearby.</h1><p>One calm view of the local radio environment, with every inference grounded in observable signal.</p></div><div className="header-actions"><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
-     <div className="signal-banner"><Shield /><span><strong>Defensive session.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'The operator API is not connected yet.'} No cameras. No cloud relay.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
-     <div className="stats-grid"><MetricCard label="Nearby targets" value={String(visibleDevices.length).padStart(2, '0')} note="Current authorized scope" icon={Radio} accent /><MetricCard label="Tracked now" value={String(devices.filter(d => d.status === 'active').length).padStart(2, '0')} note={`${activeNodes} active node${activeNodes === 1 ? '' : 's'}`} icon={Eye} /><MetricCard label="Signal floor" value={signalFloor} note="Lowest observed dBm" icon={Signal} /><MetricCard label="Protected links" value={protectedLinks} note="Encrypted observations" icon={Shield} /></div>
-    <div className="main-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Proximity field</div><div className="panel-subtitle">Relative signal position · 25 m radius</div></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'LIVE SWEEP' : 'SWEEP PAUSED'}</div></div><RadarView devices={devices} selectedId={selectedId} onSelect={onSelect} /></section>
-       <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} /><div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected ? 'dBm' : 'NO LOCK'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
+  const measuredSignals = visibleDevices.flatMap(device => device.signal === null ? [] : [device.signal]);
+  const signalFloor = measuredSignals.length ? String(Math.min(...measuredSignals)) : '—';
+  const scanSources = [...new Set(devices.map(device => device.protocol))].join(', ') || 'No measurements';
+  const historyValues = trail.length > 1 ? [...trail].reverse().flatMap(sighting => sighting.signalDbm === null ? [] : [Math.abs(sighting.signalDbm)]) : [];
+  return <><div className="page-heading"><div><div className="page-kicker">RF command surface / 01</div><h1>Know what is nearby.</h1><p>Measured WiFi access points and BLE advertisements from your authorized local relay. Nearby client devices are not fully discoverable through standard OS scans.</p></div><div className="header-actions"><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
+     <div className="signal-banner"><Shield /><span><strong>Authorized environment only.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'The operator API is not connected yet.'} This dashboard lists WiFi APs/BLE advertisers only, not all nearby phones or people.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
+     <div className="stats-grid"><MetricCard label="Nearby targets" value={String(visibleDevices.length).padStart(2, '0')} note="Current authorized scope" icon={Radio} accent /><MetricCard label="Tracked now" value={String(devices.filter(d => d.status === 'active').length).padStart(2, '0')} note={`${activeNodes} active node${activeNodes === 1 ? '' : 's'}`} icon={Eye} /><MetricCard label="Signal floor" value={signalFloor} note="Lowest observed dBm" icon={Signal} /><MetricCard label="Scan sources" value={scanSources} note="Protocols observed" icon={Shield} /></div>
+    <div className="main-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Detected targets</div><div className="panel-subtitle">Schematic layout · direction and distance not measured</div></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'LIVE SWEEP' : 'SWEEP PAUSED'}</div></div><RadarView devices={devices} selectedId={selectedId} onSelect={onSelect} /></section>
+       <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} /><div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected?.signal !== null && selected ? 'dBm' : 'NO MEASUREMENT'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
     </div>
     <div className="lower-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Latest discoveries</div><div className="panel-subtitle">{visibleDevices.length} visible targets · sorted by signal</div></div><button className="btn" data-testid="button-open-ledger" onClick={() => onNavigate('ledger')}>Open ledger <ArrowDownToLine size={13} /></button></div><DeviceRows devices={visibleDevices.slice(0, 4)} selectedId={selectedId} onSelect={onSelect} onFavorite={onFavorite} /></section><section className="panel"><div className="panel-header"><div><div className="panel-title">Scan nodes</div><div className="panel-subtitle">Local sensor topology</div></div><button className="icon-button" data-testid="button-open-nodes" onClick={() => onNavigate('nodes')}><ChevronRight /></button></div><NodeList nodes={nodes} /></section></div>
   </>;
@@ -351,29 +352,28 @@ function FilterToolbar({ query, setQuery, protocol, setProtocol, showGhosts, set
 function Ledger({ devices, selectedId, onSelect, onFavorite, onExport }: { devices: RFDevice[]; selectedId: string; onSelect: (id: string) => void; onFavorite: (id: string) => void; onExport: () => void }) {
   const [query, setQuery] = useState(''); const [protocol, setProtocol] = useState('all'); const [showGhosts, setShowGhosts] = useState(false);
   const filtered = useMemo(() => devices.filter(device => (showGhosts || device.status !== 'ghost') && (protocol === 'all' || device.protocol === protocol) && [device.mac, device.vendor, device.node].join(' ').toLowerCase().includes(query.toLowerCase())), [devices, protocol, query, showGhosts]);
-  return <><div className="page-heading"><div><div className="page-kicker">Device ledger / 02</div><h1>Every signal leaves a trace.</h1><p>Search, inspect, and mark observations that deserve a closer look. Ghost targets remain available without cluttering the live surface.</p></div><div className="header-actions"><button className="btn btn-primary" data-testid="button-export-ledger-header" onClick={onExport}><FileDown size={14} /> Export ledger</button></div></div><div className="panel view-panel"><FilterToolbar {...{ query, setQuery, protocol, setProtocol, showGhosts, setShowGhosts, onExport }} /><div className="ledger-table-wrap">{filtered.length ? <table className="ledger-table"><thead><tr><th>Target</th><th>Vendor</th><th>Protocol</th><th>Signal</th><th>Proximity</th><th>Node</th><th>Last seen</th><th>Status</th><th /></tr></thead><tbody>{filtered.map(device => <tr key={device.id} data-testid={`ledger-row-${device.id}`} onClick={() => onSelect(device.id)}><td><span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}><button className="icon-button" data-testid={`ledger-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button><span className="strong">{device.mac}</span></span></td><td>{device.vendor}</td><td>{device.protocol}</td><td>{device.signal} dBm</td><td>{device.maxProximity}</td><td>{device.node}</td><td>{device.lastSeen}</td><td><span className={`state ${device.status}`}>{device.status}</span></td><td><ChevronRight size={14} /></td></tr>)}</tbody></table> : <div className="empty-state"><Filter size={23} /><h3>No matching observations</h3><p>Nothing in the ledger matches the current filters.</p></div>}</div></div></>;
+  return <><div className="page-heading"><div><div className="page-kicker">Device ledger / 02</div><h1>Every signal leaves a trace.</h1><p>Search and review adapter observations. Signal strength is not a reliable distance estimate; network discovery does not reveal every client device.</p></div><div className="header-actions"><button className="btn btn-primary" data-testid="button-export-ledger-header" onClick={onExport}><FileDown size={14} /> Export ledger</button></div></div><div className="panel view-panel"><FilterToolbar {...{ query, setQuery, protocol, setProtocol, showGhosts, setShowGhosts, onExport }} /><div className="ledger-table-wrap">{filtered.length ? <table className="ledger-table"><thead><tr><th>Target</th><th>Vendor</th><th>Protocol</th><th>Signal</th><th>Proximity</th><th>Node</th><th>Last seen</th><th>Status</th><th /></tr></thead><tbody>{filtered.map(device => <tr key={device.id} data-testid={`ledger-row-${device.id}`} onClick={() => onSelect(device.id)}><td><span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}><button className="icon-button" data-testid={`ledger-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button><span className="strong">{device.mac}</span></span></td><td>{device.vendor}</td><td>{device.protocol}</td><td>{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null ? ` · ${device.signalQualityPercent}% quality` : ''}</td><td>{device.maxProximity}</td><td>{device.node}</td><td>{device.lastSeen}</td><td><span className={`state ${device.status}`}>{device.status}</span></td><td><ChevronRight size={14} /></td></tr>)}</tbody></table> : <div className="empty-state"><Filter size={23} /><h3>No matching observations</h3><p>Nothing in the ledger matches the current filters.</p></div>}</div></div></>;
 }
 
 function sensingMetricsFromSnapshot(snapshot: SensingSnapshot | null): SensingMetric[] {
   const metrics = snapshot?.metrics ?? {};
-  const confidence = Math.round(Math.max(0, Math.min(1, typeof snapshot?.confidence === 'number' ? snapshot.confidence : 0)) * 100);
   const number = (key: string, digits = 1) => typeof metrics[key] === 'number' ? (metrics[key] as number).toFixed(digits) : '—';
-  const percent = typeof metrics.presenceProbability === 'number' ? ((metrics.presenceProbability as number) * 100).toFixed(1) : '—';
+  const percent = typeof metrics.presenceProbability === 'number' ? ((metrics.presenceProbability as number) * 100).toFixed(1) : 'Not measured';
   const status = snapshot ? 'Observed' : 'Awaiting telemetry';
   return [
-    { label: 'Presence probability', value: percent, unit: '%', confidence, status, trend: snapshot ? 'latest batch' : 'no sample' },
-    { label: 'Motion index', value: number('motionIndex', 2), unit: 'Δ', confidence, status, trend: snapshot ? 'latest batch' : 'no sample' },
-    { label: 'Occupancy estimate', value: typeof metrics.occupancyEstimate === 'number' ? String(metrics.occupancyEstimate) : '—', unit: 'persons', confidence, status, trend: 'environmental only' },
-    { label: 'Channel noise floor', value: number('signalFloorDbm', 1), unit: 'dBm', confidence, status, trend: snapshot ? 'latest batch' : 'no sample' },
-    { label: 'Signal variance', value: number('signalVarianceDb', 2), unit: 'dB', confidence, status, trend: snapshot ? 'latest batch' : 'no sample' },
-    { label: 'Observations', value: typeof metrics.observationCount === 'number' ? String(metrics.observationCount) : '—', unit: '/ batch', confidence, status, trend: snapshot ? 'signed node input' : 'no sample' },
+    { label: 'Presence probability', value: percent, unit: '%', status, trend: 'not inferred' },
+    { label: 'Motion index', value: number('motionIndex', 2), unit: 'Δ', status, trend: 'not inferred' },
+    { label: 'Occupancy estimate', value: typeof metrics.occupancyEstimate === 'number' ? String(metrics.occupancyEstimate) : '—', unit: 'persons', status, trend: 'not inferred' },
+    { label: 'Channel noise floor', value: number('signalFloorDbm', 1), unit: 'dBm', status, trend: snapshot ? 'measured sample' : 'no sample' },
+    { label: 'Signal variance', value: number('signalVarianceDb', 2), unit: 'dB²', status, trend: snapshot ? 'measured sample' : 'no sample' },
+    { label: 'Observations', value: typeof metrics.observationCount === 'number' ? String(metrics.observationCount) : '—', unit: '/ batch', status, trend: snapshot ? 'signed node input' : 'no sample' },
   ];
 }
 
 function Sensing({ scanning, snapshot, apiConnected }: { scanning: boolean; snapshot: SensingSnapshot | null; apiConnected: boolean }) {
   const metrics = sensingMetricsFromSnapshot(snapshot);
-  const notes = snapshot ? [`Last signed sample: ${new Date(snapshot.observedAt).toLocaleString()}.`, `Inference mode: ${String(snapshot.metrics.inferenceStatus ?? 'environmental heuristic')}.`, 'Outputs are low-resolution environmental indicators, not identity or medical measurements.'] : ['No sensing snapshot has been received.', 'Connect an authorized CSI or RF node to publish environmental metrics.', 'No camera, microphone, or biometric stream is used.'];
-  return <><div className="page-heading"><div><div className="page-kicker">Sensing / 03</div><h1>Read the room, quietly.</h1><p>Camera-free environmental inference from changes in radio behavior. This layer surfaces patterns, never identities.</p></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'INFERENCE ACTIVE' : 'INFERENCE PAUSED'}</div></div><div className="signal-banner"><CameraOff /><span><strong>Privacy boundary.</strong> {apiConnected ? (snapshot ? 'Metrics below come from the latest signed local-node sample.' : 'The API is connected, but no sensing sample has arrived yet.') : 'Connect to the operator API to load sensing telemetry.'} No images, audio, or medical inference.</span><CircleHelp size={14} style={{ marginLeft: 'auto' }} /></div><div className="sensing-grid">{metrics.map(metric => <div className="panel sensing-card" key={metric.label} data-testid={`sensing-${metric.label.toLowerCase().replaceAll(' ', '-')}`}><div className="metric-icon"><Gauge size={17} /></div><div className="eyebrow">{metric.label}</div><div className="sensing-value">{metric.value}<span className="sensing-unit">{metric.unit}</span></div><div className="confidence"><span>{metric.status} · {metric.trend}</span><span className="confidence-bar"><i style={{ width: `${metric.confidence}%` }} /></span></div></div>)}</div><div className="panel" style={{ marginTop: 11 }}><div className="panel-header"><div><div className="panel-title">Inference notes</div><div className="panel-subtitle">Signed telemetry provenance and uncertainty</div></div><Zap size={15} style={{ color: '#d3a652' }} /></div><div className="notes-grid">{notes.map((note, index) => <div className="note-cell" key={note}><div className="eyebrow">{index === 0 && snapshot ? 'LATEST' : 'BOUNDARY'}</div><p style={{ fontSize: 11, color: '#a2b9b5', lineHeight: 1.5, margin: '9px 0 0' }}>{note}</p></div>)}</div></div></>;
+  const notes = snapshot ? [`Last signed sample: ${new Date(snapshot.observedAt).toLocaleString()}.`, `Processing mode: ${String(snapshot.metrics.inferenceStatus ?? 'measurements only')}.`, 'Device counts and signal statistics do not establish people, occupancy, motion, identity, or health status.'] : ['No sensing snapshot has been received.', 'Only actual adapter measurements are displayed; no placeholder values are generated.', 'No camera, microphone, or biometric stream is used.'];
+  return <><div className="page-heading"><div><div className="page-kicker">Signal measurements / 03</div><h1>Read the radio data.</h1><p>Measured radio-adapter data only. This view does not infer people, occupancy, motion, identity, or health.</p></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'RELAY REPORTING' : 'AWAITING MEASUREMENTS'}</div></div><div className="signal-banner"><CameraOff /><span><strong>Measurement limits.</strong> {apiConnected ? (snapshot ? 'Metrics below come from the latest signed local-node sample.' : 'The API is connected, but no sensing sample has arrived yet.') : 'Connect to the operator API to load sensing telemetry.'} Radio measurements cannot identify or count people. No images, audio, or medical inference.</span><CircleHelp size={14} style={{ marginLeft: 'auto' }} /></div><div className="sensing-grid">{metrics.map(metric => <div className="panel sensing-card" key={metric.label} data-testid={`sensing-${metric.label.toLowerCase().replaceAll(' ', '-')}`}><div className="metric-icon"><Gauge size={17} /></div><div className="eyebrow">{metric.label}</div><div className="sensing-value">{metric.value}<span className="sensing-unit">{metric.unit}</span></div><div className="confidence"><span>{metric.status} · {metric.trend}</span></div></div>)}</div><div className="panel" style={{ marginTop: 11 }}><div className="panel-header"><div><div className="panel-title">Measurement notes</div><div className="panel-subtitle">Telemetry provenance and measurement limits</div></div><Zap size={15} style={{ color: '#d3a652' }} /></div><div className="notes-grid">{notes.map((note, index) => <div className="note-cell" key={note}><div className="eyebrow">{index === 0 && snapshot ? 'LATEST' : 'BOUNDARY'}</div><p style={{ fontSize: 11, color: '#a2b9b5', lineHeight: 1.5, margin: '9px 0 0' }}>{note}</p></div>)}</div></div></>;
 }
 
 function Nodes({ nodes, onAdd, onRemove }: { nodes: ScanNode[]; onAdd: (name: string, address: string) => Promise<boolean>; onRemove: (id: string) => void }) {
@@ -400,12 +400,8 @@ function Hardware({ capabilities, refreshing, onRefresh, onRequest }: { capabili
     <div className="signal-banner"><ShieldCheck /><span><strong>Permission-first hardware scan.</strong> No camera, microphone, location, Bluetooth, USB, or serial permission is requested until you choose a specific action.</span><span className="hardware-count">{connected}/{supported} usable</span></div>
     <div className="stats-grid hardware-stats"><MetricCard label="Usable surfaces" value={String(connected).padStart(2, '0')} note="Ready or connected" icon={Cpu} /><MetricCard label="Permission gates" value={String(capabilities.filter(capability => capability.status === 'permission').length).padStart(2, '0')} note="Operator decision required" icon={Shield} /><MetricCard label="RF direct scan" value="RELAY" note="Browser boundary enforced" icon={Radio} /><MetricCard label="Profile" value="LOCAL" note="No cloud hardware relay" icon={Smartphone} /></div>
     <div className="panel hardware-panel"><div className="panel-header"><div><div className="panel-title">Detected capability surface</div><div className="panel-subtitle">Results come from this device and this browser session</div></div><div className="status-pill"><span className="pulse-dot" /> DEVICE-AWARE</div></div><div className="capability-grid">{capabilities.map(capability => <div className={`capability-card ${capability.status}`} key={capability.id} data-testid={`hardware-${capability.id}`}><div className="capability-top"><div className="capability-icon"><CapabilityIcon id={capability.id} /></div><span className={`hardware-status ${capability.status}`}>{statusLabel[capability.status]}</span></div><div className="capability-label">{capability.label}</div><p>{capability.detail}</p><div className="capability-use"><span className="eyebrow">BackSpyne use</span><span>{capability.use}</span></div>{capability.action && <button className="btn capability-action" data-testid={`button-connect-${capability.action}`} onClick={() => onRequest(capability.id)}>{capability.status === 'connected' ? <><CheckCircle2 size={13} /> Connected</> : <><Plus size={13} /> Choose approved device</>}</button>}</div>)}</div></div>
-    <div className="panel hardware-note"><div className="panel-header"><div><div className="panel-title">Why nearby WiFi is different</div><div className="panel-subtitle">Browser security boundary</div></div><Wifi size={16} style={{ color: '#6a8c8b' }} /></div><div className="hardware-note-body"><p>Web pages cannot silently enumerate nearby access points or harvest MAC addresses. That is intentional. For authorized RF observations, connect a local Python relay, ESP32/CSI sensor, or approved BLE peripheral through the Network nodes workflow.</p><a className="btn" href="https://github.com/youknowzo" target="_blank" rel="noreferrer"><Github size={13} /> View PaperBagExpress on GitHub <ExternalLink size={12} /></a></div></div>
+    <div className="panel hardware-note"><div className="panel-header"><div><div className="panel-title">Why nearby WiFi is different</div><div className="panel-subtitle">Browser security boundary</div></div><Wifi size={16} style={{ color: '#6a8c8b' }} /></div><div className="hardware-note-body"><p>Web pages cannot enumerate nearby WiFi access points. The local Python scanner must run on a host with appropriate OS permissions and supported adapter tools; it reports access points and BLE advertisements, not every nearby client device. CSI requires compatible hardware and a separate configured stream.</p><a className="btn" href="https://github.com/youknowzo" target="_blank" rel="noreferrer"><Github size={13} /> View PaperBagExpress on GitHub <ExternalLink size={12} /></a></div></div>
   </>;
-}
-
-function liveNumber(value: unknown, fallback: number) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 function liveText(value: unknown, fallback: string) {
@@ -425,40 +421,48 @@ function timeAgo(value: unknown) {
   return `${hours} hr ago`;
 }
 
-function liveDeviceFromApi(raw: Record<string, unknown>, index: number): RFDevice {
-  const signal = liveNumber(raw.lastSignalDbm ?? raw.signalDbm, -92);
-  const address = liveText(raw.address, `LIVE-${index + 1}`);
-  const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload as Record<string, unknown> : {};
-  const protocol = raw.protocol === 'BLE' || payload.source === 'ble_adapter' ? 'BLE' : 'WiFi';
-  const distance = Math.max(0.5, Math.pow(10, (-45 - signal) / 20));
-  const seenAt = liveText(raw.lastSeenAt, new Date().toISOString());
-  const ageSeconds = seenAt === 'now' ? 0 : Math.max(0, Math.floor((Date.now() - new Date(seenAt).getTime()) / 1000));
+function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
+  const address = liveText(raw.address, '');
+  if (!address) return null;
+  const signalValue = raw.lastSignalDbm ?? raw.signalDbm;
+  const signal = typeof signalValue === 'number' && Number.isFinite(signalValue) ? signalValue : null;
+  const metadata = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata as Record<string, unknown> : {};
+  const sightingMetadata = raw.sightingMetadata && typeof raw.sightingMetadata === 'object' ? raw.sightingMetadata as Record<string, unknown> : {};
+  const storedQuality = sightingMetadata.signalQualityPercent ?? metadata.signalQualityPercent;
+  const quality = typeof storedQuality === 'number' && Number.isFinite(storedQuality) ? storedQuality : null;
+  const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload as Record<string, unknown> :
+    metadata.payload && typeof metadata.payload === 'object' ? metadata.payload as Record<string, unknown> : {};
+  const protocol = raw.protocol === 'BLE' || payload.source === 'ble_adapter' ? 'BLE' : raw.protocol === 'WiFi' || payload.source === 'wifi_os_api' ? 'WiFi' : 'system';
+  const seenAt = liveText(raw.lastSeenAt, '');
+  const parsedAt = seenAt ? new Date(seenAt).getTime() : Number.NaN;
+  const ageSeconds = Number.isFinite(parsedAt) ? Math.max(0, Math.floor((Date.now() - parsedAt) / 1000)) : Number.POSITIVE_INFINITY;
+  const staleLimit = 5 * 60;
   return {
     id: liveText(raw.id, `live-${address}`),
     mac: address,
     vendor: liveText(raw.vendor, 'Unknown vendor'),
     protocol,
     signal,
-    maxProximity: `${distance.toFixed(1)} m`,
-    status: ageSeconds < 60 ? 'active' : ageSeconds < 300 ? 'idle' : 'ghost',
+    signalQualityPercent: quality,
+    maxProximity: 'Not measured',
+    status: ageSeconds <= 60 ? 'active' : ageSeconds <= staleLimit ? 'idle' : 'ghost',
     lastSeen: timeAgo(seenAt),
-    firstSeen: timeAgo(liveText(raw.firstSeenAt, seenAt)),
-    node: liveText(raw.nodeName, 'Authorized relay'),
-    channel: liveText(raw.channel, protocol === 'BLE' ? '2.4 GHz' : 'observed'),
-    encrypted: Boolean(raw.encrypted ?? true),
+    firstSeen: timeAgo(liveText(raw.firstSeenAt, '')),
+    node: liveText(raw.nodeName, liveText(raw.node, 'Authorized relay')),
+    channel: liveText(raw.channel, liveText(payload.channel, 'not reported')),
     favorite: Boolean(raw.favorite),
   };
 }
 
-function liveNodeFromApi(raw: Record<string, unknown>): ScanNode {
-  const heartbeat = liveText(raw.lastHeartbeatAt, new Date().toISOString());
+function liveNodeFromApi(raw: ApiNode): ScanNode {
+  const heartbeat = liveText(raw.lastHeartbeatAt, '');
   return {
-    id: liveText(raw.id, `node-${Date.now()}`),
+    id: liveText(raw.id, 'unknown-node'),
     name: liveText(raw.name, 'Authorized relay'),
     address: liveText(raw.address, 'local'),
     status: raw.status === 'online' ? 'online' : 'offline',
-    lastSeen: heartbeat === 'now' ? 'now' : 'live heartbeat',
-    devices: 0,
+    lastSeen: timeAgo(heartbeat),
+    devices: typeof raw.deviceCount === 'number' ? raw.deviceCount : 0,
     role: liveText(raw.role, 'Sensor relay'),
   };
 }
@@ -487,13 +491,23 @@ function Home() {
           fetch('/api/devices', { credentials: 'include' }),
           fetch('/api/nodes', { credentials: 'include' }),
         ]);
-        if (!devicesResponse.ok || !nodesResponse.ok || disposed) return;
+        if (devicesResponse.status === 401 || nodesResponse.status === 401 || devicesResponse.status === 503 || nodesResponse.status === 503) {
+          setApiConnected(false);
+          setLiveMode(false);
+          setScanning(false);
+          setDevices([]);
+          setNodes([]);
+          return;
+        }
+        if (!devicesResponse.ok || !nodesResponse.ok || disposed) throw new Error('Failed to load BackSpyne data');
         const devicePayload = await devicesResponse.json() as { devices?: Array<Record<string, unknown>> };
         const nodePayload = await nodesResponse.json() as { nodes?: Array<Record<string, unknown>> };
         setApiConnected(true);
-        setDevices((devicePayload.devices ?? []).map((device, index) => liveDeviceFromApi(device, index)));
-        setNodes((nodePayload.nodes ?? []).map((node) => liveNodeFromApi(node)));
-        setLiveMode(Boolean(devicePayload.devices?.length || nodePayload.nodes?.some(node => node.status === 'online')));
+        setDevices((devicePayload.devices ?? []).map(liveDeviceFromApi).filter((device): device is RFDevice => device !== null));
+        setNodes((nodePayload.nodes ?? []).map(liveNodeFromApi));
+        const relayActive = Boolean(nodePayload.nodes?.some(node => node.status === 'online'));
+        setScanning(relayActive);
+        setLiveMode(relayActive);
         const sensingResponse = await fetch('/api/sensing/summary', { credentials: 'include' });
         if (sensingResponse.ok) {
           const sensingPayload = await sensingResponse.json() as { latest?: SensingSnapshot | null };
@@ -502,9 +516,11 @@ function Home() {
       } catch {
         setApiConnected(false);
         setLiveMode(false);
+        setScanning(false);
       }
     };
     void readLiveState();
+    const pollTimer = window.setInterval(() => { void readLiveState(); }, 15_000);
     void (async () => {
       try {
         const response = await fetch('/api/sessions', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'BackSpyne operator session' }) });
@@ -516,13 +532,14 @@ function Home() {
         // The session is optional for read-only operation; telemetry remains account-scoped.
       }
     })();
-    const stream = new EventSource('/api/stream');
+    const stream = new EventSource('/api/stream', { withCredentials: true });
     const onTelemetry = (event: MessageEvent<string>) => {
       try {
         const payload = JSON.parse(event.data) as { nodeId?: string; observations?: Array<Record<string, unknown>> };
         if (disposed) return;
         setApiConnected(true);
-        if (payload.observations?.length) setLiveMode(true);
+        setScanning(true);
+        setLiveMode(true);
         const telemetry = payload as { metrics?: Record<string, unknown>; observedAt?: string };
         if (telemetry.metrics && telemetry.observedAt) setSensingSnapshot({ id: `stream-${telemetry.observedAt}`, observedAt: telemetry.observedAt, metrics: telemetry.metrics });
         if (!payload.observations?.length) return;
@@ -532,7 +549,8 @@ function Home() {
             const address = typeof observation.address === 'string' ? observation.address : '';
             if (!address) continue;
             const existing = next.findIndex(device => device.mac === address);
-            const live = liveDeviceFromApi({ ...observation, address, id: `${payload.nodeId ?? 'node'}-${address}` }, next.length);
+            const live = liveDeviceFromApi({ ...observation, address, id: `${payload.nodeId ?? 'node'}-${address}` });
+            if (!live) continue;
             if (existing >= 0) next[existing] = { ...next[existing], ...live, favorite: next[existing].favorite };
             else next.unshift(live);
           }
@@ -543,7 +561,7 @@ function Home() {
       }
     };
     stream.addEventListener('telemetry', onTelemetry as EventListener);
-    return () => { disposed = true; stream.close(); };
+    return () => { disposed = true; window.clearInterval(pollTimer); stream.close(); };
   }, [isSignedIn]);
   useEffect(() => { if (!selectedId && devices[0]) setSelectedId(devices[0].id); }, [devices, selectedId]);
   useEffect(() => {
@@ -583,14 +601,6 @@ function Home() {
     const response = await fetch(`/api/nodes/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' });
     if (response.ok) setNodes(current => current.filter(node => node.id !== id));
   };
-  const toggleScan = async () => {
-    const nextScanning = !scanning;
-    if (sessionId) {
-      const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: nextScanning ? 'active' : 'paused' }) });
-      if (!response.ok) return;
-    }
-    setScanning(nextScanning);
-  };
   const refreshHardware = async () => { setHardwareRefreshing(true); try { setHardware(await scanHardwareCapabilities()); } finally { setHardwareRefreshing(false); } };
   const requestHardware = async (id: HardwareCapability['id']) => {
     const hardwareNavigator = navigator as HardwareNavigator;
@@ -620,16 +630,16 @@ function Home() {
       setHardware(current => current.map(capability => capability.id === id ? { ...capability, status: 'limited', detail: 'Permission was not granted. Choose the action again to retry.' } : capability));
     }
   };
-  const exportLedger = () => { const columns = ['id', 'mac', 'vendor', 'protocol', 'signal', 'maxProximity', 'status', 'lastSeen', 'firstSeen', 'node', 'channel', 'encrypted', 'favorite']; const csv = [columns.join(','), ...devices.map(device => columns.map(key => JSON.stringify(device[key as keyof RFDevice] ?? '')).join(','))].join('\n'); const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'backspyne-device-ledger.csv'; link.click(); URL.revokeObjectURL(url); };
+  const exportLedger = () => { const columns = ['id', 'mac', 'vendor', 'protocol', 'signalDbm', 'signalQualityPercent', 'proximity', 'status', 'lastSeen', 'firstSeen', 'node', 'channel', 'favorite']; const csv = [columns.join(','), ...devices.map(device => columns.map(key => JSON.stringify(({ signalDbm: device.signal, proximity: device.maxProximity } as Record<string, unknown>)[key] ?? device[key as keyof RFDevice] ?? '')).join(','))].join('\n'); const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'backspyne-device-ledger.csv'; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); };
    const onSignOut = async () => {
      if (sessionId) await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', credentials: 'include' }).catch(() => undefined);
      await signOut({ redirectUrl: basePath || '/' });
    };
-   return <div className="app-shell"><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected }} /><div className="main-content"><Topbar view={view} scanning={scanning} onToggleScan={() => void toggleScan()} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} />}</main></div></div>;
+   return <div className="app-shell"><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected }} /><div className="main-content"><Topbar view={view} scanning={scanning} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} />}</main></div></div>;
 }
 
 function Landing() {
-  return <div className="landing-shell"><div className="landing-grid" /><div className="landing-inner"><Brand /><div className="landing-hero"><div className="page-kicker">BackSpyne by PaperBagExpress</div><h1>Know what is nearby.<br /><span>Keep the signal local.</span></h1><p>Privacy-first RF observability for authorized environments. Connect approved sensor nodes, inspect uncertainty, and keep every observation accountable.</p><div className="landing-actions"><a className="btn btn-primary" href={`${basePath}/sign-in`}>Enter operator portal <ChevronRight size={14} /></a><a className="btn landing-secondary" href={`${basePath}/sign-up`}>Create access</a></div><div className="landing-proof"><span><ShieldCheck size={14} /> Permission-first hardware</span><span><Radio size={14} /> Local bridge ready</span><span><Github size={14} /> Open operator identity</span></div></div><div className="landing-footer"><span>Authorized environments only.</span><span>© PaperBagExpress · BackSpyne</span></div></div></div>;
+  return <div className="landing-shell"><div className="landing-grid" /><div className="landing-inner"><Brand /><div className="landing-hero"><div className="page-kicker">BackSpyne by PaperBagExpress</div><h1>Know what is nearby.<br /><span>Keep the signal local.</span></h1><p>Privacy-first RF observability for authorized environments. Connect approved sensor nodes, inspect measurements, and keep every observation accountable.</p><div className="landing-actions"><a className="btn btn-primary" href={`${basePath}/sign-in`}>Enter operator portal <ChevronRight size={14} /></a><a className="btn landing-secondary" href={`${basePath}/sign-up`}>Create access</a></div><div className="landing-proof"><span><ShieldCheck size={14} /> Permission-first hardware</span><span><Radio size={14} /> Local bridge ready</span><span><Github size={14} /> Open operator identity</span></div></div><div className="landing-footer"><span>Authorized environments only.</span><span>© PaperBagExpress · BackSpyne</span><a href="/legal" className="legal-link">Legal & Privacy</a></div></div></div>;
 }
 
 function SignInPage() {
@@ -659,13 +669,42 @@ function UserPortal() {
   return <><Show when="signed-in"><Home /></Show><Show when="signed-out"><Redirect to="/" /></Show></>;
 }
 
+function LegalPage() {
+  return <main className="legal-page">
+    <a href="/" className="legal-back">← BackSpyne home</a>
+    <h1>Legal, privacy & acceptable use</h1>
+    <p><strong>Important:</strong> This is general information, not legal advice or a substitute for jurisdiction-specific terms, privacy notices, or counsel review. It cannot guarantee protection from liability. Replace all bracketed items and have qualified counsel review before public operation.</p>
+    <h2>Authorized use only</h2>
+    <p>Use this software only on networks, radio equipment, locations, and data for which you have documented authority and any required consent. You are responsible for complying with wiretap, computer access, radio, privacy, consumer-protection, workplace-monitoring, and data-protection laws. No use to stalk, identify, track, surveil, or harm people; bypass device/network access controls; intercept communications; or conduct covert monitoring.</p>
+    <h2>What the scanner can and cannot do</h2>
+    <p>Standard operating-system APIs report nearby WiFi access points and BLE advertisements that are visible to the adapter. They do not enumerate every nearby WiFi client or Bluetooth device; identifiers may be randomized or absent. CSI requires separate compatible hardware and explicit configuration. RSSI is noisy and this product does not infer distance, direction, identity, person presence, occupancy, movement, or health status. No such inference is warranted by these readings.</p>
+    <h2>Data and privacy</h2>
+    <p>When configured, the local bridge sends WiFi/BLE observation identifiers and radio metadata, node identifiers, timestamps, and measured aggregates to the configured API. The server stores account-scoped telemetry in its configured database and streams it to signed-in users. Do not scan or transmit personal data unless you have a lawful basis and any required notice/consent. The operator must document purposes, legal basis, retention/deletion schedule, processors, contact details, rights-request process, and security practices before deployment. Authentication, hosting, and database providers may process account/network metadata under their own terms.</p>
+    <h2>Security and availability</h2>
+    <p>Use HTTPS and strong, unique server-side credentials. Never place server secrets in frontend variables or commit them. The local node token is a shared credential and must be rotated if exposed. The software is provided as-is; measurements, access, persistence, alerts, and service availability are not guaranteed. It is not for emergency response, safety-critical, medical, law-enforcement, or evidentiary use.</p>
+    <h2>Operator contact and policy links</h2>
+    <p>Operator/business name: [operator must supply]. Contact: [operator must supply]. Effective date: [operator must supply]. Replace these placeholders with actual policy URLs and business/contact details before public use. Do not collect telemetry until retention and deletion policies are published and configured.</p>
+  </main>;
+}
+
+function AuthNotConfigured() {
+  return <main className="legal-page">
+    <a href="/" className="legal-back">← BackSpyne home</a>
+    <h1>Operator sign-in is not configured</h1>
+    <p>This deployment does not have authentication credentials set. No account data is being collected, stored, or transmitted. Set <code>VITE_CLERK_PUBLISHABLE_KEY</code> (build) and <code>CLERK_SECRET_KEY</code> / <code>CLERK_PUBLISHABLE_KEY</code> (server) to enable the operator portal.</p>
+    <p><a href="/legal" className="legal-link">Read the legal, privacy &amp; acceptable-use notice</a></p>
+  </main>;
+}
+
 function Router() {
-  return <ErrorBoundary><Switch><Route path="/" component={HomeRedirect} /><Route path="/user-portal" component={UserPortal} /><Route path="/sign-in/*?" component={SignInPage} /><Route path="/sign-up/*?" component={SignUpPage} /><Route component={NotFound} /></Switch></ErrorBoundary>;
+  return <ErrorBoundary><Switch><Route path="/legal" component={LegalPage} /><Route path="/" component={clerkPubKey ? HomeRedirect : Landing} /><Route path="/user-portal" component={clerkPubKey ? UserPortal : AuthNotConfigured} /><Route path="/sign-in/*?" component={clerkPubKey ? SignInPage : AuthNotConfigured} /><Route path="/sign-up/*?" component={clerkPubKey ? SignUpPage : AuthNotConfigured} /><Route component={NotFound} /></Switch></ErrorBoundary>;
 }
 
 function ClerkProviderWithRoutes() {
   const [, setLocation] = useLocation();
   const stripBase = (path: string) => basePath && path.startsWith(basePath) ? path.slice(basePath.length) || '/' : path;
+  const content = <QueryClientProvider client={queryClient}><Router /></QueryClientProvider>;
+  if (!clerkPubKey) return content;
   return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={clerkAppearance} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} localization={{ signIn: { start: { title: 'Welcome back', subtitle: 'Sign in to access your operator portal' } }, signUp: { start: { title: 'Create operator access', subtitle: 'Keep your authorized sensing sessions accountable' } } }} routerPush={to => setLocation(stripBase(to))} routerReplace={to => setLocation(stripBase(to), { replace: true })}><QueryClientProvider client={queryClient}><ClerkQueryClientCacheInvalidator /><Router /></QueryClientProvider></ClerkProvider>;
 }
 
