@@ -8,7 +8,7 @@ const app = express();
 // The API application is imported from its bundled build artifact rather than its
 // TypeScript sources: Vercel transpiles files individually, so it cannot resolve the
 // workspace's bundler-style imports or its TypeScript-only libraries.
-const apiApp: Promise<Express> = import("./artifacts/api-server/dist/handler.mjs").then(
+const apiApp: Promise<Express> = import("./dist/api/handler.mjs").then(
   (module) => (module as unknown as { default: Express }).default,
 );
 

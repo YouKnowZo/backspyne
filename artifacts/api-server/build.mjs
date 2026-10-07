@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { rm } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -121,6 +121,13 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
     `,
     },
   });
+
+  // The Vercel entrypoint imports the API handler from the repository-level dist/
+  // tree, so a single includeFiles pattern can ship every runtime asset of the
+  // function (the handler bundle and the built single-page app).
+  const handlerDir = path.resolve(artifactDir, "../../dist/api");
+  await mkdir(handlerDir, { recursive: true });
+  await copyFile(path.join(distDir, "handler.mjs"), path.join(handlerDir, "handler.mjs"));
 }
 
 buildAll().catch((err) => {
