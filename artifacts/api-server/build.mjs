@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
 import esbuildPluginPino from "esbuild-plugin-pino";
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 
 // Plugins (e.g. 'esbuild-plugin-pino') may use `require` to resolve dependencies
 globalThis.require = createRequire(import.meta.url);
@@ -128,6 +128,12 @@ globalThis.__dirname = __bannerPath.dirname(globalThis.__filename);
   const handlerDir = path.resolve(artifactDir, "../../dist/api");
   await mkdir(handlerDir, { recursive: true });
   await copyFile(path.join(distDir, "handler.mjs"), path.join(handlerDir, "handler.mjs"));
+  // Vercel type-checks the repository entrypoint, which imports this bundle, so emit
+  // the matching declaration file for the generated JavaScript artifact.
+  await writeFile(
+    path.join(handlerDir, "handler.d.mts"),
+    'declare const app: import("express").Express;\nexport default app;\n',
+  );
 }
 
 buildAll().catch((err) => {
