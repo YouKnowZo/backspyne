@@ -47,3 +47,11 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.vercel
+.env*
+
+# BackSpyne scanner virtual env and state
+scanner/.venv/
+scanner/__pycache__/
+scanner/*.pyc
+scanner/.env
