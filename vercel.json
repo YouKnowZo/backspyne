@@ -2,9 +2,12 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pnpm install --frozen-lockfile",
   "buildCommand": "pnpm run build:vercel",
-  "functions": {
-    "index.ts": {
-      "includeFiles": "public/**"
-    }
-  }
+  "rewrites": [
+    { "source": "/legal", "destination": "/index.html" },
+    { "source": "/user-portal", "destination": "/index.html" },
+    { "source": "/sign-in", "destination": "/index.html" },
+    { "source": "/sign-in/(.*)", "destination": "/index.html" },
+    { "source": "/sign-up", "destination": "/index.html" },
+    { "source": "/sign-up/(.*)", "destination": "/index.html" }
+  ]
 }
