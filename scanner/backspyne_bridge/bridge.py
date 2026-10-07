@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import json
 import logging
-import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -71,6 +70,18 @@ class Bridge:
             for value in row.get("amplitude", row.get("amplitudes", []))
             if isinstance(value, (int, float))
         ]
+        LOGGER.info(
+            "scan cycle: wifi=%d ble=%d csi=%d mode=%s",
+            len(wifi),
+            len(ble),
+            len(csi_values),
+            self.config.mode,
+        )
+        if not wifi and not ble and not csi_values:
+            LOGGER.warning(
+                "no observations collected; verify Bluetooth permission, a powered WiFi adapter, "
+                "and that the bridge is running in live mode"
+            )
         metrics = derive_metrics(wifi, ble, csi_values)
         metrics["csiSamples"] = len(csi_values)
         metrics["collectionMode"] = self.config.mode

@@ -24,7 +24,7 @@ class Config:
 
     @classmethod
     def from_environment(cls) -> "Config":
-        mode = os.getenv("BACKSPYNE_MODE", "simulate").strip().lower()
+        mode = os.getenv("BACKSPYNE_MODE", "live").strip().lower()
         if mode not in {"simulate", "live"}:
             raise ValueError("BACKSPYNE_MODE must be either 'simulate' or 'live'")
 

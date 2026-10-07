@@ -17,9 +17,10 @@ BackSpyne API.
    - Windows PowerShell: `./start.ps1`
    - Windows Command Prompt: `start.bat`
 
-Use `BACKSPYNE_MODE=live` for the production bridge. `simulate` remains
-available only as an explicit connectivity test and is never presented by the
-operator dashboard as live telemetry.
+The bridge defaults to `BACKSPYNE_MODE=live` and uses the computer's real
+WiFi/Bluetooth adapters. Set `BACKSPYNE_MODE=simulate` only for a deliberate
+signed connectivity test; simulated observations are never presented by the
+operator dashboard as live hardware telemetry.
 
 ## Live adapters
 

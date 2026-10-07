@@ -14,15 +14,16 @@ import { desc, eq, and } from "drizzle-orm";
 import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
 
 const router: IRouter = Router();
-const streamClients = new Set<import("express").Response>();
+const streamClients = new Map<import("express").Response, string>();
 
 function id(prefix: string) {
   return `${prefix}_${randomUUID()}`;
 }
 
-function emit(event: string, payload: unknown) {
+function emit(event: string, payload: unknown, ownerId?: string) {
   const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const client of streamClients) {
+  for (const [client, clientOwnerId] of streamClients) {
+    if (ownerId && clientOwnerId !== ownerId) continue;
     try {
       client.write(message);
     } catch {
@@ -333,7 +334,7 @@ router.get("/stream", requireAuth, (req: AuthenticatedRequest, res) => {
     "X-Accel-Buffering": "no",
   });
   res.write(`event: ready\ndata: ${JSON.stringify({ userId: req.userId })}\n\n`);
-  streamClients.add(res);
+  streamClients.set(res, req.userId!);
   const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 20_000);
   req.on("close", () => {
     clearInterval(heartbeat);
@@ -477,7 +478,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       });
     }
 
-    emit("telemetry", event);
+  emit("telemetry", event, event.ownerId);
     res.status(202).json({ accepted: true, eventId: event.id });
   } catch (error) {
     next(error);

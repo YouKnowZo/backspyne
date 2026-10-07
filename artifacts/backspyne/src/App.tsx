@@ -11,10 +11,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider, Show, SignIn, SignUp, useClerk, useUser } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
-import { ErrorBoundary } from '@/components/error-boundary';
-import { Toaster } from '@/components/ui/toaster';
-import { TooltipProvider } from '@/components/ui/tooltip';
-import NotFound from '@/pages/not-found';
+import { ErrorBoundary } from './components/error-boundary';
+import { Toaster } from './components/ui/toaster';
+import { TooltipProvider } from './components/ui/tooltip';
+import NotFound from './pages/not-found';
 import { Redirect, Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 type RFDevice = {
@@ -335,7 +335,7 @@ function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite,
   const protectedLinks = devices.length ? `${Math.round((encryptedCount / devices.length) * 100)}%` : '—';
   const historyValues = trail.length > 1 ? [...trail].reverse().map(sighting => Math.abs(sighting.signalDbm ?? -92)) : [];
   return <><div className="page-heading"><div><div className="page-kicker">RF command surface / 01</div><h1>Know what is nearby.</h1><p>One calm view of the local radio environment, with every inference grounded in observable signal.</p></div><div className="header-actions"><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
-     <div className="signal-banner"><Shield /><span><strong>Defensive session.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : apiConnected ? 'The operator API is connected and waiting for an authorized local node.' : 'The operator API is not connected yet.'} No cameras. No cloud relay.</span><ChevronRight size={14} style={{ marginLeft: 'auto', color: '#5b8988' }} /></div>
+     <div className="signal-banner"><Shield /><span><strong>Defensive session.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'The operator API is not connected yet.'} No cameras. No cloud relay.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
      <div className="stats-grid"><MetricCard label="Nearby targets" value={String(visibleDevices.length).padStart(2, '0')} note="Current authorized scope" icon={Radio} accent /><MetricCard label="Tracked now" value={String(devices.filter(d => d.status === 'active').length).padStart(2, '0')} note={`${activeNodes} active node${activeNodes === 1 ? '' : 's'}`} icon={Eye} /><MetricCard label="Signal floor" value={signalFloor} note="Lowest observed dBm" icon={Signal} /><MetricCard label="Protected links" value={protectedLinks} note="Encrypted observations" icon={Shield} /></div>
     <div className="main-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Proximity field</div><div className="panel-subtitle">Relative signal position · 25 m radius</div></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'LIVE SWEEP' : 'SWEEP PAUSED'}</div></div><RadarView devices={devices} selectedId={selectedId} onSelect={onSelect} /></section>
        <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} /><div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected ? 'dBm' : 'NO LOCK'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
@@ -464,7 +464,7 @@ function liveNodeFromApi(raw: Record<string, unknown>): ScanNode {
 }
 
 function Home() {
-  const [view, setView] = useState<NavView>('dashboard'); const [mobileOpen, setMobileOpen] = useState(false); const [scanning, setScanning] = useState(true);
+  const [view, setView] = useState<NavView>('dashboard'); const [mobileOpen, setMobileOpen] = useState(false); const [scanning, setScanning] = useState(false);
   const [devices, setDevices] = useState<RFDevice[]>([]);
   const [nodes, setNodes] = useState<ScanNode[]>([]);
   const [hardware, setHardware] = useState<HardwareCapability[]>(initialHardware);
