@@ -1,12 +1,23 @@
 import express from "express";
-import apiApp from "./artifacts/api-server/src/app";
+import type { Express } from "express";
 
-// Vercel's Express framework detection looks for an entrypoint that imports
-// express and exports the Express instance as its default export. The outer
-// app here exists only to satisfy that contract; all routing, middleware, and
-// error handling live in the api-server application mounted below.
+// Vercel's Express framework detection requires the entrypoint itself to import
+// express and export the Express instance as its default export.
 const app = express();
 
-app.use(apiApp);
+// The API application is imported from its bundled build artifact rather than its
+// TypeScript sources: Vercel transpiles files individually, so it cannot resolve the
+// workspace's bundler-style imports or its TypeScript-only libraries.
+const apiApp: Promise<Express> = import("./artifacts/api-server/dist/handler.mjs").then(
+  (module) => (module as unknown as { default: Express }).default,
+);
+
+app.use(async (req, res, next) => {
+  try {
+    (await apiApp)(req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default app;

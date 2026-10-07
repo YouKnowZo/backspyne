@@ -4,7 +4,7 @@
   "buildCommand": "pnpm run build:vercel",
   "functions": {
     "index.ts": {
-      "includeFiles": "dist/web/**"
+      "includeFiles": ["artifacts/api-server/dist/**", "dist/web/**"]
     }
   }
 }
