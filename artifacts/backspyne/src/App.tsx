@@ -296,7 +296,7 @@ function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMo
         <div className="adapter-line"><span className={`pulse-dot ${liveMode ? '' : 'amber'}`} /> <span>Adapter status</span><span style={{ marginLeft: 'auto', color: liveMode ? '#79d8cf' : apiStatus === 'error' || apiStatus === 'unavailable' ? '#ef928b' : '#d6b064', fontSize: 10 }}>{liveMode ? 'LIVE' : apiStatus === 'error' ? 'DATA ERROR' : apiStatus === 'unavailable' ? 'OFFLINE' : apiConnected ? 'READY' : 'CHECKING'}</span></div>
         <p className="adapter-caption">{liveMode ? 'Signed node telemetry is connected to this operator session.' : apiStatus === 'error' ? 'The operator API could not read scan data. Check the database connection; relay state is unavailable.' : apiStatus === 'unavailable' ? 'Operator API is unavailable. Reconnect to load persisted telemetry.' : apiConnected ? 'Operator API is connected; waiting for an authorized node heartbeat.' : 'Checking operator API and authorized relay status.'}</p>
       </div>
-      <div className="disclaimer"><strong>Authorized environments only.</strong><br />Collect only where you have permission. No person tracking, identification, occupancy, or health claims. See <a href="/legal">Legal & Privacy</a>.</div>
+      <div className="disclaimer"><strong>Authorized environments only.</strong><br />Collect only where you have permission. CSI research is experimental and not validated for safety, identity, or health use. See <a href="/legal">Legal & Privacy</a>.</div>
     </div>
   </aside>;
 }
@@ -425,23 +425,58 @@ function Ledger({ devices, selectedId, onSelect, onFavorite, onExport }: { devic
 
 function sensingMetricsFromSnapshot(snapshot: SensingSnapshot | null): SensingMetric[] {
   const metrics = snapshot?.metrics ?? {};
-  const number = (key: string, digits = 1) => typeof metrics[key] === 'number' ? (metrics[key] as number).toFixed(digits) : '—';
-  const percent = typeof metrics.presenceProbability === 'number' ? ((metrics.presenceProbability as number) * 100).toFixed(1) : 'Not measured';
-  const status = snapshot ? 'Observed' : 'Awaiting telemetry';
-  return [
-    { label: 'Presence probability', value: percent, unit: '%', status, trend: 'not inferred' },
-    { label: 'Motion index', value: number('motionIndex', 2), unit: 'Δ', status, trend: 'not inferred' },
-    { label: 'Occupancy estimate', value: typeof metrics.occupancyEstimate === 'number' ? String(metrics.occupancyEstimate) : '—', unit: 'persons', status, trend: 'not inferred' },
-    { label: 'Channel noise floor', value: number('signalFloorDbm', 1), unit: 'dBm', status, trend: snapshot ? 'measured sample' : 'no sample' },
-    { label: 'Signal variance', value: number('signalVarianceDb', 2), unit: 'dB²', status, trend: snapshot ? 'measured sample' : 'no sample' },
-    { label: 'Observations', value: typeof metrics.observationCount === 'number' ? String(metrics.observationCount) : '—', unit: '/ batch', status, trend: snapshot ? 'signed node input' : 'no sample' },
+  const number = (key: string, digits = 1) => typeof metrics[key] === 'number' && Number.isFinite(metrics[key]) ? (metrics[key] as number).toFixed(digits) : '—';
+  const status = snapshot ? 'Signed node sample' : 'Awaiting telemetry';
+  const csiActive = metrics.sensingMode === 'research';
+  const classification = metrics.classification && typeof metrics.classification === 'object' ? metrics.classification as Record<string, unknown> : {};
+  const researchVitals = metrics.researchVitalSigns && typeof metrics.researchVitalSigns === 'object' ? metrics.researchVitalSigns as Record<string, unknown> : {};
+  const modelStatus = metrics.poseModelStatus && typeof metrics.poseModelStatus === 'object' ? metrics.poseModelStatus as Record<string, unknown> : {};
+  const pose = Array.isArray(metrics.poseKeypoints) ? metrics.poseKeypoints : [];
+  const numericVitalsAuthorized = metrics.numericVitalsAuthorized === true;
+  const rawEvidence = metrics.calibratedEvidence && typeof metrics.calibratedEvidence === 'object' ? metrics.calibratedEvidence as Record<string, unknown> : null;
+  const evidenceCount = rawEvidence?.person_count;
+  const evidence = rawEvidence?.schema === 'backspyne.calibrated-presence-evidence.v2' && typeof evidenceCount === 'number' && Number.isInteger(evidenceCount) && evidenceCount >= 0 && evidenceCount <= 255 && typeof rawEvidence.presence === 'boolean' && rawEvidence.presence === (evidenceCount > 0) && Array.isArray(rawEvidence.source_node_ids) ? rawEvidence : null;
+  const rows: SensingMetric[] = [
+    { label: 'Radio signal floor', value: number('signalFloorDbm', 1), unit: 'dBm', status, trend: typeof metrics.signalFloorDbm === 'number' ? 'measured AP/BLE sample' : 'no measurement' },
+    { label: 'Radio signal variance', value: number('signalVarianceDb', 2), unit: 'dB²', status, trend: typeof metrics.signalVarianceDb === 'number' ? 'measured AP/BLE sample' : 'no measurement' },
+    { label: 'CSI amplitude variance', value: number('csiAmplitudeVariance', 4), unit: 'amplitude²', status, trend: csiActive ? `${String(metrics.csiSampleCount ?? 0)} live source samples` : 'compatible CSI source not connected' },
+    { label: 'Observed radios', value: typeof metrics.observationCount === 'number' ? String(metrics.observationCount) : '—', unit: '/ scan', status, trend: typeof metrics.observationCount === 'number' ? 'signed WiFi/BLE observations' : 'no radio observations' },
+    { label: 'CSI source', value: csiActive ? String(metrics.csiSource ?? 'live') : '—', unit: '', status, trend: csiActive ? `node ${Array.isArray(metrics.csiNodeIds) ? metrics.csiNodeIds.join(', ') || 'unknown' : 'unknown'} · ${String(metrics.csiSampleAgeMilliseconds ?? '—')} ms old` : 'awaiting compatible live CSI engine' },
+    { label: 'Research classification', value: typeof classification.motion_level === 'string' ? classification.motion_level.replaceAll('_', ' ') : 'Not available', unit: '', status: csiActive ? 'Experimental' : 'No CSI inference', trend: evidence ? 'calibration evidence attached' : 'uncalibrated research output' },
+    { label: 'Calibrated room state', value: evidence ? (evidence.presence === true ? 'Presence' : 'No presence') : 'Not established', unit: '', status: evidence ? 'Calibration-bound · experimental' : 'Abstaining', trend: evidence ? `experimental output · count ${String(evidence.person_count)} · model ${String(evidence.model_id ?? 'unknown')}` : 'requires fresh explicit room calibration' },
+    { label: 'Research breathing rate', value: numericVitalsAuthorized && typeof researchVitals.breathing_rate_bpm === 'number' && Number.isFinite(researchVitals.breathing_rate_bpm) ? Number(researchVitals.breathing_rate_bpm).toFixed(1) : 'Not released', unit: 'BPM', status: 'Research · non-medical', trend: numericVitalsAuthorized ? 'engine publication gate confirmed' : 'not published by the engine' },
+    { label: 'Research heart rate', value: numericVitalsAuthorized && typeof researchVitals.heart_rate_bpm === 'number' && Number.isFinite(researchVitals.heart_rate_bpm) ? Number(researchVitals.heart_rate_bpm).toFixed(1) : 'Not released', unit: 'BPM', status: 'Research · non-medical', trend: numericVitalsAuthorized ? 'engine publication gate confirmed' : 'not published by the engine' },
+    { label: 'Pose model', value: modelStatus.loaded === true ? 'Model loaded' : 'Not available', unit: '', status: modelStatus.loaded === true ? 'Experimental model output' : 'No trained model', trend: pose.length ? `${pose.length} model keypoints` : 'no pose points published' },
   ];
+  return rows;
 }
 
 function Sensing({ scanning, snapshot, apiConnected }: { scanning: boolean; snapshot: SensingSnapshot | null; apiConnected: boolean }) {
   const metrics = sensingMetricsFromSnapshot(snapshot);
-  const notes = snapshot ? [`Last signed sample: ${new Date(snapshot.observedAt).toLocaleString()}.`, `Processing mode: ${String(snapshot.metrics.inferenceStatus ?? 'measurements only')}.`, 'Device counts and signal statistics do not establish people, occupancy, motion, identity, or health status.'] : ['No sensing snapshot has been received.', 'Only actual adapter measurements are displayed; no placeholder values are generated.', 'No camera, microphone, or biometric stream is used.'];
-  return <><div className="page-heading"><div><div className="page-kicker">Signal measurements / 03</div><h1>Read the radio data.</h1><p>Measured radio-adapter data only. This view does not infer people, occupancy, motion, identity, or health.</p></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'RELAY REPORTING' : 'AWAITING MEASUREMENTS'}</div></div><div className="signal-banner"><CameraOff /><span><strong>Measurement limits.</strong> {apiConnected ? (snapshot ? 'Metrics below come from the latest signed local-node sample.' : 'The API is connected, but no sensing sample has arrived yet.') : 'Connect to the operator API to load sensing telemetry.'} Radio measurements cannot identify or count people. No images, audio, or medical inference.</span><CircleHelp size={14} style={{ marginLeft: 'auto' }} /></div><div className="sensing-grid">{metrics.map(metric => <div className="panel sensing-card" key={metric.label} data-testid={`sensing-${metric.label.toLowerCase().replaceAll(' ', '-')}`}><div className="metric-icon"><Gauge size={17} /></div><div className="eyebrow">{metric.label}</div><div className="sensing-value">{metric.value}<span className="sensing-unit">{metric.unit}</span></div><div className="confidence"><span>{metric.status} · {metric.trend}</span></div></div>)}</div><div className="panel" style={{ marginTop: 11 }}><div className="panel-header"><div><div className="panel-title">Measurement notes</div><div className="panel-subtitle">Telemetry provenance and measurement limits</div></div><Zap size={15} style={{ color: '#d3a652' }} /></div><div className="notes-grid">{notes.map((note, index) => <div className="note-cell" key={note}><div className="eyebrow">{index === 0 && snapshot ? 'LATEST' : 'BOUNDARY'}</div><p style={{ fontSize: 11, color: '#a2b9b5', lineHeight: 1.5, margin: '9px 0 0' }}>{note}</p></div>)}</div></div></>;
+  const snapshotMetrics = snapshot?.metrics ?? {};
+  const csiActive = snapshotMetrics.sensingMode === 'research';
+  const csiFeatures = snapshotMetrics.csiFeatures && typeof snapshotMetrics.csiFeatures === 'object' ? snapshotMetrics.csiFeatures as Record<string, unknown> : {};
+  const qualityVerdict = typeof snapshotMetrics.qualityVerdict === 'string' ? snapshotMetrics.qualityVerdict : 'not provided';
+  const notes = snapshot ? [
+    `Last signed bridge sample: ${new Date(snapshot.observedAt).toLocaleString()}.`,
+    csiActive ? `CSI source: ${String(snapshotMetrics.csiSource)} · ${String(snapshotMetrics.csiSampleAgeMilliseconds)} ms upstream age · quality ${qualityVerdict}.` : 'The current bridge cycle contains WiFi/BLE measurements only; CSI inference is not active.',
+    'Research classifications and estimates are experimental signals, not proof of occupancy, identity, motion, or health; absence of a result means the system abstained.',
+  ] : ['No sensing snapshot has been received.', 'Only actual adapter observations are displayed; synthetic data is not generated.', 'No image, audio, or biometric stream is used.'];
+  const researchFeatures = [
+    ['Mean RSSI', 'mean_rssi', 'dBm'], ['Signal variance', 'variance', ''], ['Motion-band power', 'motion_band_power', ''], ['Breathing-band power', 'breathing_band_power', ''], ['Dominant frequency', 'dominant_freq_hz', 'Hz'], ['Spectral power', 'spectral_power', ''],
+  ] as const;
+  const rawCalibratedEvidence = snapshotMetrics.calibratedEvidence && typeof snapshotMetrics.calibratedEvidence === 'object' ? snapshotMetrics.calibratedEvidence as Record<string, unknown> : null;
+  const evidenceCount = rawCalibratedEvidence?.person_count;
+  const calibratedEvidence = rawCalibratedEvidence?.schema === 'backspyne.calibrated-presence-evidence.v2' && typeof evidenceCount === 'number' && Number.isInteger(evidenceCount) && evidenceCount >= 0 && evidenceCount <= 255 && typeof rawCalibratedEvidence.presence === 'boolean' && rawCalibratedEvidence.presence === (evidenceCount > 0) && Array.isArray(rawCalibratedEvidence.source_node_ids) ? rawCalibratedEvidence : null;
+  const poseKeypoints = Array.isArray(snapshotMetrics.poseKeypoints) ? snapshotMetrics.poseKeypoints : [];
+  return <><div className="page-heading"><div><div className="page-kicker">WiFi sensing / 03</div><h1>Read the radio data.</h1><p>CSI-enabled research mode is available through a compatible, authenticated local sensing engine. Standard WiFi access-point/BLE scans remain descriptive measurements only.</p></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'RELAY REPORTING' : 'AWAITING MEASUREMENTS'}</div></div>
+    <div className={`signal-banner ${csiActive ? 'research-banner' : ''}`}><CameraOff /><span><strong>{csiActive ? 'Experimental research output.' : 'Measurement-only mode.'}</strong> {csiActive ? 'CSI measurements and model outputs below are sourced from the authenticated live engine and are research-only. No safety, clinical, identity, or emergency interpretation.' : apiConnected ? (snapshot ? 'The latest signed local-node sample has WiFi/BLE measurements; configure compatible CSI hardware to enable WiFi sensing research.' : 'The API is connected, but no sensing sample has arrived yet.') : 'Connect to the operator API to load sensing telemetry.'} No images or audio are used.</span><CircleHelp size={14} style={{ marginLeft: 'auto' }} /></div>
+    <div className="sensing-grid">{metrics.map(metric => <div className="panel sensing-card" key={metric.label} data-testid={`sensing-${metric.label.toLowerCase().replaceAll(' ', '-')}`}><div className="metric-icon"><Gauge size={17} /></div><div className="eyebrow">{metric.label}</div><div className="sensing-value">{metric.value}<span className="sensing-unit">{metric.unit}</span></div><div className="confidence"><span>{metric.status} · {metric.trend}</span></div></div>)}</div>
+    {csiActive && <div className="panel research-panel"><div className="panel-header"><div><div className="panel-title">Engine measurements</div><div className="panel-subtitle">Measured features from live CSI frames · not person-level evidence</div></div><span className="hardware-status limited">RESEARCH</span></div><div className="notes-grid">{researchFeatures.map(([label, key, unit]) => <div className="note-cell" key={key}><div className="eyebrow">{label}</div><strong className="research-feature-value">{typeof csiFeatures[key] === 'number' && Number.isFinite(csiFeatures[key]) ? (csiFeatures[key] as number).toFixed(3) : '—'} <small>{unit}</small></strong></div>)}</div></div>}
+    {calibratedEvidence && <div className="panel research-panel"><div className="panel-header"><div><div className="panel-title">Calibration provenance</div><div className="panel-subtitle">The engine attached a calibration-bound research result</div></div><CheckCircle2 size={16} style={{ color: '#79d8cf' }} /></div><div className="device-details-grid"><div className="device-detail"><span>Evidence schema</span><strong>{String(calibratedEvidence.schema ?? 'unknown')}</strong></div><div className="device-detail"><span>Model ID</span><strong>{String(calibratedEvidence.model_id ?? 'unknown')}</strong></div><div className="device-detail"><span>Inference method</span><strong>{String(calibratedEvidence.inference_method ?? 'unknown')}</strong></div><div className="device-detail"><span>Bound node IDs</span><strong>{Array.isArray(calibratedEvidence.source_node_ids) ? calibratedEvidence.source_node_ids.join(', ') : 'unknown'}</strong></div></div></div>}
+    {poseKeypoints.length > 0 && <div className="panel research-panel"><div className="panel-header"><div><div className="panel-title">Experimental model keypoints</div><div className="panel-subtitle">Coordinates emitted by a loaded model; not a validated pose or person identity</div></div><span className="hardware-status limited">MODEL OUTPUT</span></div><div className="pose-points">{poseKeypoints.map((point, index) => <span key={index}>{Array.isArray(point) ? point.map(value => typeof value === 'number' ? value.toFixed(2) : '—').join(' · ') : 'Invalid point'}</span>)}</div></div>}
+    <div className="panel" style={{ marginTop: 11 }}><div className="panel-header"><div><div className="panel-title">Provenance & limits</div><div className="panel-subtitle">Source mode, calibration state, and safe interpretation</div></div><Zap size={15} style={{ color: '#d3a652' }} /></div><div className="notes-grid">{notes.map((note, index) => <div className="note-cell" key={note}><div className="eyebrow">{index === 0 && snapshot ? 'LATEST' : 'BOUNDARY'}</div><p style={{ fontSize: 11, color: '#a2b9b5', lineHeight: 1.5, margin: '9px 0 0' }}>{note}</p></div>)}</div></div>
+  </>;
 }
 
 function Nodes({ nodes, onAdd, onRemove }: { nodes: ScanNode[]; onAdd: (name: string, address: string) => Promise<boolean>; onRemove: (id: string) => void }) {
@@ -641,7 +676,12 @@ function Home() {
         setScanning(true);
         setLiveMode(true);
         const telemetry = payload as { metrics?: Record<string, unknown>; observedAt?: string };
-        if (telemetry.metrics && telemetry.observedAt) setSensingSnapshot({ id: `stream-${telemetry.observedAt}`, observedAt: telemetry.observedAt, metrics: telemetry.metrics });
+        if (telemetry.metrics && typeof telemetry.observedAt === 'string') {
+          const observedAt = new Date(telemetry.observedAt);
+          if (Number.isFinite(observedAt.getTime())) {
+            setSensingSnapshot({ id: `stream-${telemetry.observedAt}`, observedAt: telemetry.observedAt, metrics: telemetry.metrics });
+          }
+        }
         if (!payload.observations?.length) return;
         setDevices(current => {
           const next = [...current];
@@ -791,7 +831,7 @@ function LegalPage() {
     <h2>Authorized use only</h2>
     <p>Use this software only on networks, radio equipment, locations, and data for which you have documented authority and any required consent. You are responsible for complying with wiretap, computer access, radio, privacy, consumer-protection, workplace-monitoring, and data-protection laws. No use to stalk, identify, track, surveil, or harm people; bypass device/network access controls; intercept communications; or conduct covert monitoring.</p>
     <h2>What the scanner can and cannot do</h2>
-    <p>Standard operating-system APIs report nearby WiFi access points and BLE advertisements that are visible to the adapter. They do not enumerate every nearby WiFi client or Bluetooth device; identifiers may be randomized or absent. CSI requires separate compatible hardware and explicit configuration. RSSI is noisy and this product does not infer distance, direction, identity, person presence, occupancy, movement, or health status. No such inference is warranted by these readings.</p>
+    <p>Standard operating-system APIs report nearby WiFi access points and BLE advertisements that are visible to the adapter. They do not enumerate every nearby WiFi client or Bluetooth device; identifiers may be randomized or absent. RSSI is noisy and does not establish distance, direction, identity, person presence, occupancy, movement, or health. Optional CSI research mode requires separate compatible hardware, an authenticated live sensing engine, and any required room calibration. Its outputs are experimental, not independently validated by this console, may be absent when the engine abstains, and are not for safety-critical, medical, identity, or emergency use. No named-person identification is supported.</p>
     <h2>Data and privacy</h2>
     <p>When configured, the local bridge sends WiFi/BLE observation identifiers and radio metadata, node identifiers, timestamps, and measured aggregates to the configured API. The server stores account-scoped telemetry in its configured database and streams it to signed-in users. Do not scan or transmit personal data unless you have a lawful basis and any required notice/consent. The operator must document purposes, legal basis, retention/deletion schedule, processors, contact details, rights-request process, and security practices before deployment. Authentication, hosting, and database providers may process account/network metadata under their own terms.</p>
     <h2>Security and availability</h2>

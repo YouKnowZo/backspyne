@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from .config import Config
+from .csi_source import CsiSourceClient
 from .inference import derive_metrics
 from .observers import BleObserver, CsiObserver, WifiObserver
 
@@ -55,6 +56,12 @@ class Bridge:
         self.wifi = WifiObserver()
         self.ble = BleObserver()
         self.csi = CsiObserver(config.csi_serial_port, config.csi_baudrate)
+        self.csi_source = CsiSourceClient(
+            config.csi_api_url,
+            config.csi_api_token,
+            config.csi_source_allowlist,
+            config.csi_max_age_seconds,
+        )
         self.api = ApiClient(config)
 
     async def collect(self) -> dict[str, Any]:
@@ -84,6 +91,8 @@ class Bridge:
             len(csi_values),
             self.config.mode,
         )
+        csi_snapshot = await asyncio.to_thread(self.csi_source.read)
+        csi_values = csi_snapshot["amplitudes"] if csi_snapshot else csi_values
         if not wifi and not ble and not csi_values:
             LOGGER.warning(
                 "no observations collected; verify Bluetooth permission, a powered WiFi adapter, "
@@ -91,13 +100,36 @@ class Bridge:
             )
         metrics = derive_metrics(wifi, ble, csi_values)
         metrics["collectionMode"] = self.config.mode
+        metrics["sensingMode"] = "research" if csi_snapshot else "measurements_only"
+        metrics["csiSource"] = csi_snapshot["source"] if csi_snapshot else ("serial_measurements_only" if csi_values else "none")
+        metrics["csiNodeIds"] = csi_snapshot["nodeIds"] if csi_snapshot else []
+        metrics["csiSampleAgeMilliseconds"] = csi_snapshot["ageMilliseconds"] if csi_snapshot else None
+        metrics["csiSampleTimestamp"] = csi_snapshot["sampleTimestamp"] if csi_snapshot else None
+        metrics["csiSampleCount"] = len(csi_values)
+        metrics["classification"] = csi_snapshot["classification"] if csi_snapshot else {}
+        metrics["calibratedEvidence"] = csi_snapshot["calibratedEvidence"] if csi_snapshot else None
+        metrics["researchVitalSigns"] = csi_snapshot["vitalSigns"] if csi_snapshot else None
+        metrics["numericVitalsAuthorized"] = csi_snapshot["numericVitalsAuthorized"] if csi_snapshot else False
+        metrics["poseKeypoints"] = csi_snapshot["poseKeypoints"] if csi_snapshot else None
+        metrics["poseModelStatus"] = csi_snapshot["poseModelStatus"] if csi_snapshot else {}
+        metrics["csiFeatures"] = csi_snapshot["features"] if csi_snapshot else {}
+        metrics["csiSourceState"] = csi_snapshot["sourceState"] if csi_snapshot else "disconnected"
+        metrics["csiTick"] = csi_snapshot["tick"] if csi_snapshot else None
+        metrics["qualityVerdict"] = csi_snapshot["qualityVerdict"] if csi_snapshot else None
+        metrics["inferenceStatus"] = "calibrated_research_evidence" if csi_snapshot and csi_snapshot["calibratedEvidence"] else "research_uncalibrated" if csi_snapshot else "measurements_only"
+        metrics["researchDisclaimer"] = "Experimental research output; not validated for safety, occupancy, medical, identity, or emergency use." if csi_snapshot else None
         return {
             "nodeId": self.config.node_id,
             "nodeName": self.config.node_name,
             "ownerId": self.config.owner_id,
             "protocol": "system",
             "observedAt": datetime.now(timezone.utc).isoformat(),
-            "capabilities": ["wifi_os_scan", "ble_advertisement_scan", *(["csi_serial"] if self.config.csi_serial_port else [])],
+            "capabilities": [
+                "wifi_os_scan",
+                "ble_advertisement_scan",
+                *(["csi_serial_measurements_only"] if self.config.csi_serial_port else []),
+                *(["csi_engine_research_stream"] if csi_snapshot else []),
+            ],
             "observations": [*wifi, *ble],
             "metrics": metrics,
         }

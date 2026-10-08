@@ -10,11 +10,11 @@ def derive_metrics(
     ble: list[dict[str, Any]],
     csi: Iterable[float] | None = None,
 ) -> dict[str, float | str | bool]:
-    """Calculate descriptive signal summaries from measurements only.
+    """Calculate descriptive signal summaries; inference requires calibrated CSI.
 
-    Presence probability and occupancy are intentionally not inferred from RF
-    signal strength: ambient APs and randomized client addresses do not support
-    reliable person counting. No medical inference is attempted.
+    The independent AP/BLE signal path never implies people, occupancy, motion,
+    identity, or health. Only explicit results received from the authenticated
+    live CSI engine are added by the bridge, together with their provenance.
     """
     signals = [
         float(observation["signalDbm"])
@@ -52,5 +52,15 @@ def derive_metrics(
         "csiAmplitudeVariance": round(csi_variance, 6) if csi_samples else None,
         "confidence": None,
         "inferenceStatus": "measurements_only",
+        "sensingMode": "measurements_only",
+        "csiSource": "serial_measurements_only" if csi_samples else "none",
+        "csiNodeIds": [],
+        "csiSampleAgeMilliseconds": None,
+        "csiSampleTimestamp": None,
+        "classification": {},
+        "calibratedEvidence": None,
+        "numericVitalsAuthorized": False,
+        "qualityVerdict": None,
+        "researchDisclaimer": None,
         "medicalInference": False,
     }
