@@ -6,7 +6,7 @@ import hmac
 import json
 import logging
 import math
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -96,7 +96,7 @@ class Bridge:
             "nodeName": self.config.node_name,
             "ownerId": self.config.owner_id,
             "protocol": "system",
-            "observedAt": datetime.now(UTC).isoformat(),
+            "observedAt": datetime.now(timezone.utc).isoformat(),
             "capabilities": ["wifi_os_scan", "ble_advertisement_scan", *(["csi_serial"] if self.config.csi_serial_port else [])],
             "observations": [*wifi, *ble],
             "metrics": metrics,

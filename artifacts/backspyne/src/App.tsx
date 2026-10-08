@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Antenna, Archive, ArrowDownToLine, BarChart3, Bluetooth,
   CameraOff, Check, CheckCircle2, ChevronRight, CircleHelp, Cpu, Download,
-  Eye, ExternalLink, FileDown, Filter, Github, Gauge, LayoutDashboard, MapPin,
+  Eye, FileDown, Filter, Gauge, LayoutDashboard, MapPin,
   LogOut, Menu, Mic, Minus, Network, Plus, Radio, Radar, RefreshCw, ScanLine, Search,
   Shield, ShieldCheck, Smartphone,
   Signal, Star, Trash2, Wifi, X, Zap,
@@ -17,16 +17,22 @@ import NotFound from './pages/not-found';
 import { Redirect, Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 
 type RFDevice = {
-  id: string; mac: string; vendor: string; protocol: 'WiFi' | 'BLE' | 'CSI' | 'system';
-  signal: number | null; signalQualityPercent: number | null; maxProximity: string; status: 'active' | 'idle' | 'ghost';
-  lastSeen: string; firstSeen: string; node: string; channel: string;
-  favorite: boolean;
+  id: string; mac: string; vendor: string; vendorBasis: string; deviceType: string; addressType: string;
+  protocol: 'WiFi' | 'BLE' | 'CSI' | 'system'; signal: number | null; signalQualityPercent: number | null;
+  maxProximity: string; status: 'active' | 'idle' | 'ghost'; lastSeen: string; firstSeen: string;
+  node: string; channel: string; favorite: boolean; details: Record<string, unknown>;
+  lastSeenTimestamp: number | null; firstSeenTimestamp: number | null;
 };
 type ScanNode = { id: string; name: string; address: string; status: 'online' | 'offline'; lastSeen: string; devices: number; role: string };
 type SensingMetric = { label: string; value: string; unit: string; status: string; trend: string };
 type SensingSnapshot = { id: string; observedAt: string; metrics: Record<string, unknown>; confidence?: number | null; uncertainty?: Record<string, unknown> };
 type DeviceSighting = { observedAt: string; signalDbm: number | null; distanceMeters: number | null };
 type HardwareStatus = 'ready' | 'permission' | 'connected' | 'limited' | 'unsupported';
+type ApiStatus = 'checking' | 'connected' | 'unavailable' | 'error';
+
+function isMobileProfile() {
+  return typeof navigator !== 'undefined' && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || window.matchMedia('(max-width: 700px)').matches);
+}
 type ApiDevice = Record<string, unknown>;
 type ApiNode = Record<string, unknown>;
 type HardwareCapability = {
@@ -125,30 +131,26 @@ async function scanHardwareCapabilities(): Promise<HardwareCapability[]> {
   const hardwareNavigator = navigator as HardwareNavigator;
   const next = initialHardware.map(capability => ({ ...capability }));
   const mediaDevices = hardwareNavigator.mediaDevices;
-
-  if (hardwareNavigator.bluetooth) {
-    let available = true;
-    try {
-      available = hardwareNavigator.bluetooth.getAvailability ? await hardwareNavigator.bluetooth.getAvailability() : true;
-    } catch {
-      available = true;
+  const isMobile = isMobileProfile();
+  if (isMobile) {
+    const cameraMic = next.find(capability => capability.id === 'camera-mic');
+    if (cameraMic) {
+      cameraMic.status = 'unsupported';
+      cameraMic.detail = 'Camera and microphone are not used for RF scanning.';
     }
-    const bluetooth = next.find(capability => capability.id === 'bluetooth');
-    if (bluetooth) {
-      bluetooth.status = available ? 'permission' : 'unsupported';
-      bluetooth.detail = available
-        ? 'Radio detected. Choose an approved BLE peripheral to connect.'
-        : 'This browser does not report a Bluetooth radio.';
+    const usb = next.find(capability => capability.id === 'usb');
+    if (usb) {
+      usb.status = 'unsupported';
+      usb.detail = 'Mobile USB access is not used by this browser scanning profile.';
     }
-  } else {
-    const bluetooth = next.find(capability => capability.id === 'bluetooth');
-    if (bluetooth) {
-      bluetooth.status = 'unsupported';
-      bluetooth.detail = 'Web Bluetooth is not available in this browser.';
+    const serial = next.find(capability => capability.id === 'serial');
+    if (serial) {
+      serial.status = 'unsupported';
+      serial.detail = 'Mobile serial access is not used by this browser scanning profile.';
     }
   }
 
-  if (mediaDevices?.enumerateDevices) {
+  if (!isMobile && mediaDevices?.enumerateDevices) {
     try {
       const media = await mediaDevices.enumerateDevices();
       const cameras = media.filter(device => device.kind === 'videoinput').length;
@@ -164,7 +166,7 @@ async function scanHardwareCapabilities(): Promise<HardwareCapability[]> {
       const cameraMic = next.find(capability => capability.id === 'camera-mic');
       if (cameraMic) cameraMic.detail = 'Media inputs could not be enumerated without permission.';
     }
-  } else {
+  } else if (!isMobile) {
     const cameraMic = next.find(capability => capability.id === 'camera-mic');
     if (cameraMic) {
       cameraMic.status = 'unsupported';
@@ -172,46 +174,65 @@ async function scanHardwareCapabilities(): Promise<HardwareCapability[]> {
     }
   }
 
+  if (!isMobile && hardwareNavigator.bluetooth) {
+    let available = true;
+    try {
+      available = hardwareNavigator.bluetooth.getAvailability ? await hardwareNavigator.bluetooth.getAvailability() : true;
+    } catch {
+      available = true;
+    }
+    const bluetooth = next.find(capability => capability.id === 'bluetooth');
+    if (bluetooth) {
+      bluetooth.status = available ? 'permission' : 'unsupported';
+      bluetooth.detail = available
+        ? 'Radio detected. Choose an approved BLE peripheral to connect.'
+        : 'This browser does not report a Bluetooth radio.';
+    }
+  } else if (!isMobile) {
+    const bluetooth = next.find(capability => capability.id === 'bluetooth');
+    if (bluetooth) {
+      bluetooth.status = 'unsupported';
+      bluetooth.detail = 'Web Bluetooth is not available in this browser.';
+    }
+  }
+
   const motion = next.find(capability => capability.id === 'motion');
   if (motion) {
     const motionAvailable = typeof window !== 'undefined' && ('DeviceMotionEvent' in window || 'DeviceOrientationEvent' in window);
-    motion.status = motionAvailable ? 'ready' : 'unsupported';
+    motion.status = 'unsupported';
     motion.detail = motionAvailable
-      ? 'Device motion and orientation APIs are available to this browser.'
-      : 'Motion sensors are not exposed by this browser or device.';
+      ? 'Motion sensors are available but are not used for RF scanning.'
+      : 'Motion sensors are not exposed by this browser and are not used for RF scanning.';
   }
 
   const location = next.find(capability => capability.id === 'location');
   if (location) {
-    location.status = 'geolocation' in navigator ? 'permission' : 'unsupported';
-    location.detail = 'geolocation' in navigator
-      ? 'Location is available only after an explicit user permission decision.'
-      : 'Geolocation is not available in this browser.';
+    location.status = 'unsupported';
+    location.detail = 'Location is not used for RF scanning.';
   }
 
   const battery = next.find(capability => capability.id === 'battery');
   if (battery) {
-    if (hardwareNavigator.getBattery) {
-      try {
-        const power = await hardwareNavigator.getBattery();
-        battery.status = 'ready';
-        battery.detail = `Battery at ${Math.round(power.level * 100)}% · ${power.charging ? 'charging' : 'on battery'} · adaptive polling available.`;
-      } catch {
-        battery.status = 'limited';
-        battery.detail = 'Battery state is present but unavailable without an additional permission.';
-      }
-    } else {
-      battery.status = 'unsupported';
-      battery.detail = 'Battery status is not exposed by this browser.';
-    }
+    battery.status = 'unsupported';
+    battery.detail = 'Battery state is not used for RF scanning.';
   }
 
   const wifi = next.find(capability => capability.id === 'wifi');
   if (wifi && hardwareNavigator.connection?.effectiveType) {
-    wifi.detail = `Network link reports ${hardwareNavigator.connection.effectiveType}. Nearby WiFi scanning still requires a local adapter.`;
+    wifi.detail = `Network link reports ${hardwareNavigator.connection.effectiveType}. Browsers do not expose nearby WiFi scan results.`;
+  }
+  if (wifi) wifi.status = 'limited';
+  const bluetooth = next.find(capability => capability.id === 'bluetooth');
+  if (isMobile && bluetooth) {
+    const available = Boolean(hardwareNavigator.bluetooth?.requestDevice);
+    bluetooth.status = available ? 'permission' : 'unsupported';
+    bluetooth.detail = available
+      ? 'This browser may let you select one BLE device with permission. BackSpyne does not passively discover nearby advertisements from the phone browser.'
+      : 'This mobile browser does not expose Web Bluetooth device selection.';
+    bluetooth.use = 'User-approved BLE device selection only; use the local bridge for measured scans';
   }
 
-  if (hardwareNavigator.usb?.getDevices) {
+  if (!isMobile && hardwareNavigator.usb?.getDevices) {
     try {
       const usbDevices = await hardwareNavigator.usb.getDevices();
       const usb = next.find(capability => capability.id === 'usb');
@@ -227,7 +248,7 @@ async function scanHardwareCapabilities(): Promise<HardwareCapability[]> {
     }
   }
 
-  if (hardwareNavigator.serial?.getPorts) {
+  if (!isMobile && hardwareNavigator.serial?.getPorts) {
     try {
       const ports = await hardwareNavigator.serial.getPorts();
       const serial = next.find(capability => capability.id === 'serial');
@@ -253,10 +274,10 @@ function AppIcon({ protocol, className = '' }: { protocol: RFDevice['protocol'];
 }
 
 function Brand() {
-  return <div className="brand"><div className="brand-mark"><Radar size={16} /></div><div className="brand-copy"><div className="brand-name">Back<span>Spyne</span></div><a className="brand-credit" href="https://github.com/youknowzo" target="_blank" rel="noreferrer">by PaperBagExpress <ExternalLink size={10} /></a></div></div>;
+  return <div className="brand"><div className="brand-mark"><Radar size={16} /></div><div className="brand-copy"><div className="brand-name">Back<span>Spyne</span></div><div className="brand-credit">by PaperBagExpress</div></div></div>;
 }
 
-function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMode, apiConnected }: { view: NavView; onNavigate: (view: NavView) => void; mobileOpen: boolean; onClose: () => void; devices: RFDevice[]; nodes: ScanNode[]; liveMode: boolean; apiConnected: boolean }) {
+function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMode, apiConnected, apiStatus }: { view: NavView; onNavigate: (view: NavView) => void; mobileOpen: boolean; onClose: () => void; devices: RFDevice[]; nodes: ScanNode[]; liveMode: boolean; apiConnected: boolean; apiStatus: ApiStatus }) {
   const items: { id: NavView; label: string; icon: typeof Radio; count?: string }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'ledger', label: 'Device ledger', icon: Archive, count: String(devices.length).padStart(2, '0') },
@@ -272,21 +293,21 @@ function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMo
     </nav>
     <div className="sidebar-bottom">
       <div className="adapter-card">
-        <div className="adapter-line"><span className={`pulse-dot ${liveMode ? '' : 'amber'}`} /> <span>Adapter status</span><span style={{ marginLeft: 'auto', color: liveMode ? '#79d8cf' : '#d6b064', fontSize: 10 }}>{liveMode ? 'LIVE' : apiConnected ? 'READY' : 'OFFLINE'}</span></div>
-        <p className="adapter-caption">{liveMode ? 'Signed node telemetry is connected to this operator session.' : apiConnected ? 'Operator API is connected; waiting for an authorized node heartbeat.' : 'Operator API is unavailable. Reconnect to load persisted telemetry.'}</p>
+        <div className="adapter-line"><span className={`pulse-dot ${liveMode ? '' : 'amber'}`} /> <span>Adapter status</span><span style={{ marginLeft: 'auto', color: liveMode ? '#79d8cf' : apiStatus === 'error' || apiStatus === 'unavailable' ? '#ef928b' : '#d6b064', fontSize: 10 }}>{liveMode ? 'LIVE' : apiStatus === 'error' ? 'DATA ERROR' : apiStatus === 'unavailable' ? 'OFFLINE' : apiConnected ? 'READY' : 'CHECKING'}</span></div>
+        <p className="adapter-caption">{liveMode ? 'Signed node telemetry is connected to this operator session.' : apiStatus === 'error' ? 'The operator API could not read scan data. Check the database connection; relay state is unavailable.' : apiStatus === 'unavailable' ? 'Operator API is unavailable. Reconnect to load persisted telemetry.' : apiConnected ? 'Operator API is connected; waiting for an authorized node heartbeat.' : 'Checking operator API and authorized relay status.'}</p>
       </div>
       <div className="disclaimer"><strong>Authorized environments only.</strong><br />Collect only where you have permission. No person tracking, identification, occupancy, or health claims. See <a href="/legal">Legal & Privacy</a>.</div>
     </div>
   </aside>;
 }
 
- function Topbar({ view, scanning, onOpenMenu, sessionId, onSignOut }: { view: NavView; scanning: boolean; onOpenMenu: () => void; sessionId: string | null; onSignOut: () => Promise<void> }) {
+ function Topbar({ view, scanning, apiStatus, onOpenMenu, sessionId, onSignOut }: { view: NavView; scanning: boolean; apiStatus: ApiStatus; onOpenMenu: () => void; sessionId: string | null; onSignOut: () => Promise<void> }) {
   const { user } = useUser();
   const titles: Record<NavView, [string, string]> = { dashboard: ['Operations / overview', 'Local RF environment'], ledger: ['Operations / ledger', 'Discovered device inventory'], sensing: ['Operations / sensing', 'Measured radio adapter data'], nodes: ['Operations / nodes', 'Sensor network topology'], hardware: ['Operations / hardware', 'Device capability bridge'] };
   const operatorName = user?.firstName || user?.primaryEmailAddress?.emailAddress || 'Operator';
   return <header className="topbar">
     <div className="topbar-context"><button className="menu-button" data-testid="button-open-menu" onClick={onOpenMenu}><Menu size={20} /></button><div className="context-line" /><div><div className="context-title">{titles[view][0]}</div><div className="context-sub">{titles[view][1]}</div></div></div>
-     <div className="topbar-actions"><a className="github-link" href="https://github.com/youknowzo" target="_blank" rel="noreferrer"><Github size={14} /> <span>youknowzo</span></a><div className="connection"><span className="pulse-dot" /> {sessionId ? 'Session active' : 'Session not persisted'}</div><button type="button" data-testid="button-global-scan" className={`btn scan-toggle ${scanning ? 'is-scanning' : ''}`} aria-live="polite" title="Scanner state reflects authorized local relay heartbeat">{scanning ? <><Activity size={14} /> Relay active</> : <><Minus size={14} /> Awaiting relay</>}</button><div className="operator-menu"><div className="avatar" title={operatorName}>{operatorName.slice(0, 2).toUpperCase()}</div><button className="session-button" data-testid="button-sign-out" onClick={() => void onSignOut()}><LogOut size={13} /> Sign out</button></div></div>
+     <div className="topbar-actions"><div className="connection"><span className="pulse-dot" /> {sessionId ? 'Session active' : 'Session not persisted'}</div><button type="button" data-testid="button-global-scan" className={`btn scan-toggle ${scanning ? 'is-scanning' : ''} ${apiStatus === 'error' || apiStatus === 'unavailable' ? 'scan-error' : ''}`} aria-live="polite" title={scanning ? 'Authorized node heartbeat received' : apiStatus === 'error' ? 'BackSpyne could not read scan state from its data service' : apiStatus === 'unavailable' ? 'The operator API is unavailable' : apiStatus === 'checking' ? 'Checking the operator API' : 'No authorized relay heartbeat has been received'}>{scanning ? <><Activity size={14} /> Relay active</> : apiStatus === 'error' ? <><CircleHelp size={14} /> Data service error</> : apiStatus === 'unavailable' ? <><Minus size={14} /> API unavailable</> : apiStatus === 'checking' ? <><RefreshCw size={14} /> Checking</> : <><Minus size={14} /> Awaiting relay</>}</button><div className="operator-menu"><div className="avatar" title={operatorName}>{operatorName.slice(0, 2).toUpperCase()}</div><button className="session-button" data-testid="button-sign-out" onClick={() => void onSignOut()}><LogOut size={13} /> Sign out</button></div></div>
   </header>;
 }
 
@@ -316,10 +337,39 @@ function RadarView({ devices, selectedId, onSelect }: { devices: RFDevice[]; sel
   </div>;
 }
 
+function DeviceDetails({ device }: { device: RFDevice }) {
+  const reportedName = liveText(device.details.localName, liveText(device.details.name, ''));
+  const ssid = liveText(device.details.ssid, '');
+  const security = liveText(device.details.security, '');
+  const manufacturerData = device.details.manufacturerData && typeof device.details.manufacturerData === 'object'
+    ? Object.entries(device.details.manufacturerData as Record<string, unknown>).map(([id, value]) => `${id}: ${String(value)}`)
+    : [];
+  const serviceUuids = Array.isArray(device.details.serviceUuids) ? device.details.serviceUuids.filter((uuid): uuid is string => typeof uuid === 'string') : [];
+  const values: Array<[string, string]> = [
+    ['Device class', device.deviceType], ['Vendor evidence', device.vendorBasis], ['Address type', device.addressType],
+    ...(ssid ? [['WiFi network name', ssid] as [string, string]] : []),
+    ...(reportedName ? [['BLE advertised name', reportedName] as [string, string]] : []),
+    ...(typeof device.details.advertisedManufacturer === 'string' ? [['BLE manufacturer code', `${device.details.advertisedManufacturer} (advertising hint)`] as [string, string]] : []),
+    ...(security ? [['WiFi security', security] as [string, string]] : []),
+    ['Radio address', device.mac], ['Protocol', device.protocol], ['Channel', device.channel],
+    ['Signal', device.signal === null ? 'Not reported' : `${device.signal} dBm`],
+    ['Signal quality', device.signalQualityPercent === null ? 'Not reported' : `${device.signalQualityPercent}%`],
+    ['First observed', device.firstSeen], ['Last observed', device.lastSeen], ['Scanner node', device.node],
+  ];
+  return <section className="panel device-details" data-testid={`device-details-${device.id}`}>
+    <div className="panel-header"><div><div className="panel-title">Device details</div><div className="panel-subtitle">{device.vendor} · {device.deviceType} · {device.mac}</div></div><span className={`hardware-status ${device.vendor === 'Unknown vendor' ? 'limited' : 'connected'}`}>{device.vendor === 'Unknown vendor' ? 'limited identity' : 'vendor evidence'}</span></div>
+    <div className="device-details-grid">{values.map(([label, value]) => <div className="device-detail" key={label}><span>{label}</span><strong>{value}</strong></div>)}
+      {serviceUuids.length > 0 && <div className="device-detail device-detail-wide"><span>Advertised service UUIDs</span><strong>{serviceUuids.join(', ')}</strong></div>}
+      {manufacturerData.length > 0 && <div className="device-detail device-detail-wide"><span>Manufacturer data (hex)</span><strong>{manufacturerData.join(' · ')}</strong></div>}
+    </div>
+    <p className="device-details-note">Vendor data is based on a globally assigned address prefix or a BLE advertiser company code. A radio name/network name is self-reported and does not establish an exact product model or a nearby person’s identity.</p>
+  </section>;
+}
+
 function DeviceRows({ devices, selectedId, onSelect, onFavorite }: { devices: RFDevice[]; selectedId: string; onSelect: (id: string) => void; onFavorite: (id: string) => void }) {
   if (!devices.length) return <div className="empty-state"><Search size={23} /><h3>No targets in this slice</h3><p>Try a different query or include ghost targets.</p></div>;
   return <><div className="list-head"><span /><span>Target</span><span>Protocol</span><span>Signal</span><span>State</span><span /></div><div className="device-list">{devices.map(device => <div key={device.id} data-testid={`row-device-${device.id}`} className={`device-row ${device.id === selectedId ? 'selected' : ''}`} onClick={() => onSelect(device.id)}>
-    <div className="device-icon"><AppIcon protocol={device.protocol} /></div><div><div className="device-name">{device.vendor}</div><div className="device-mac">{device.mac}</div></div><div><div className="device-name" style={{ fontWeight: 500 }}>{device.protocol}</div><div className="device-meta">{device.channel}</div></div><div className="signal-cell">{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null && <span> {device.signalQualityPercent}%</span>}<span className="signal-bar">{device.signal !== null && <b style={{ width: `${Math.max(8, Math.min(100, 100 - (Math.abs(device.signal) - 35) * 1.65))}%` }} />}</span></div><div className={`state ${device.status}`}>{device.status}</div><button className="icon-button" aria-label={device.favorite ? 'Remove favorite' : 'Add favorite'} data-testid={`button-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button>
+    <div className="device-icon"><AppIcon protocol={device.protocol} /></div><div><div className="device-name">{device.vendor}</div><div className="device-mac">{device.deviceType} · {liveText(device.details.ssid, liveText(device.details.localName, liveText(device.details.name, device.mac)))}</div></div><div><div className="device-name" style={{ fontWeight: 500 }}>{device.protocol}</div><div className="device-meta">{device.channel}</div></div><div className="signal-cell">{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null && <span> {device.signalQualityPercent}%</span>}<span className="signal-bar">{device.signal !== null && <b style={{ width: `${Math.max(8, Math.min(100, 100 - (Math.abs(device.signal) - 35) * 1.65))}%` }} />}</span></div><div className={`state ${device.status}`}>{device.status}</div><button className="icon-button" aria-label={device.favorite ? 'Remove favorite' : 'Add favorite'} data-testid={`button-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button>
   </div>)}</div></>;
 }
 
@@ -327,7 +377,7 @@ function NodeList({ nodes }: { nodes: ScanNode[] }) {
   return <div className="node-list">{nodes.map(node => <div className="node-card" key={node.id} data-testid={`card-node-${node.id}`}><div className="node-card-top"><span className="node-name">{node.name}</span><span className={`state ${node.status === 'online' ? 'active' : 'ghost'}`}>{node.status}</span></div><div className="node-address">{node.address} · {node.role}</div><div className="node-meta"><span>{node.devices} targets observed</span><span>{node.lastSeen}</span></div></div>)}</div>;
 }
 
-function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite, onNavigate, liveMode, apiConnected, trail }: { devices: RFDevice[]; nodes: ScanNode[]; selectedId: string; scanning: boolean; onSelect: (id: string) => void; onFavorite: (id: string) => void; onNavigate: (view: NavView) => void; liveMode: boolean; apiConnected: boolean; trail: DeviceSighting[] }) {
+function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite, onNavigate, liveMode, apiConnected, apiStatus, trail }: { devices: RFDevice[]; nodes: ScanNode[]; selectedId: string; scanning: boolean; onSelect: (id: string) => void; onFavorite: (id: string) => void; onNavigate: (view: NavView) => void; liveMode: boolean; apiConnected: boolean; apiStatus: ApiStatus; trail: DeviceSighting[] }) {
   const selected = devices.find(d => d.id === selectedId);
   const visibleDevices = devices.filter(d => d.status !== 'ghost');
   const activeNodes = nodes.filter(node => node.status === 'online').length;
@@ -336,23 +386,41 @@ function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite,
   const scanSources = [...new Set(devices.map(device => device.protocol))].join(', ') || 'No measurements';
   const historyValues = trail.length > 1 ? [...trail].reverse().flatMap(sighting => sighting.signalDbm === null ? [] : [Math.abs(sighting.signalDbm)]) : [];
   return <><div className="page-heading"><div><div className="page-kicker">RF command surface / 01</div><h1>Know what is nearby.</h1><p>Measured WiFi access points and BLE advertisements from your authorized local relay. Nearby client devices are not fully discoverable through standard OS scans.</p></div><div className="header-actions"><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
-     <div className="signal-banner"><Shield /><span><strong>Authorized environment only.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'The operator API is not connected yet.'} This dashboard lists WiFi APs/BLE advertisers only, not all nearby phones or people.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
+     <div className="signal-banner"><Shield /><span><strong>Authorized environment only.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : apiStatus === 'error' ? 'The API returned an error reading scan data; the relay status cannot be confirmed. The database connection must be repaired before scans can be stored.' : apiStatus === 'unavailable' ? 'The operator API is unavailable, so relay status cannot be checked.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'Checking operator API and authorized relay status.'} This dashboard lists WiFi APs/BLE advertisers only, not all nearby phones or people.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
      <div className="stats-grid"><MetricCard label="Nearby targets" value={String(visibleDevices.length).padStart(2, '0')} note="Current authorized scope" icon={Radio} accent /><MetricCard label="Tracked now" value={String(devices.filter(d => d.status === 'active').length).padStart(2, '0')} note={`${activeNodes} active node${activeNodes === 1 ? '' : 's'}`} icon={Eye} /><MetricCard label="Signal floor" value={signalFloor} note="Lowest observed dBm" icon={Signal} /><MetricCard label="Scan sources" value={scanSources} note="Protocols observed" icon={Shield} /></div>
     <div className="main-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Detected targets</div><div className="panel-subtitle">Schematic layout · direction and distance not measured</div></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'LIVE SWEEP' : 'SWEEP PAUSED'}</div></div><RadarView devices={devices} selectedId={selectedId} onSelect={onSelect} /></section>
        <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} /><div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected?.signal !== null && selected ? 'dBm' : 'NO MEASUREMENT'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
     </div>
     <div className="lower-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Latest discoveries</div><div className="panel-subtitle">{visibleDevices.length} visible targets · sorted by signal</div></div><button className="btn" data-testid="button-open-ledger" onClick={() => onNavigate('ledger')}>Open ledger <ArrowDownToLine size={13} /></button></div><DeviceRows devices={visibleDevices.slice(0, 4)} selectedId={selectedId} onSelect={onSelect} onFavorite={onFavorite} /></section><section className="panel"><div className="panel-header"><div><div className="panel-title">Scan nodes</div><div className="panel-subtitle">Local sensor topology</div></div><button className="icon-button" data-testid="button-open-nodes" onClick={() => onNavigate('nodes')}><ChevronRight /></button></div><NodeList nodes={nodes} /></section></div>
+    {selected && <DeviceDetails device={selected} />}
   </>;
 }
 
-function FilterToolbar({ query, setQuery, protocol, setProtocol, showGhosts, setShowGhosts, onExport }: { query: string; setQuery: (v: string) => void; protocol: string; setProtocol: (v: string) => void; showGhosts: boolean; setShowGhosts: (v: boolean) => void; onExport: () => void }) {
-  return <div className="toolbar"><div className="search-box"><Search /><input data-testid="input-device-search" className="search-input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search MAC, vendor, node…" /></div><select data-testid="select-protocol" className="select-filter" value={protocol} onChange={event => setProtocol(event.target.value)}><option value="all">All protocols</option><option value="WiFi">WiFi</option><option value="BLE">BLE</option></select><button data-testid="button-toggle-ghosts" className="toggle-filter" onClick={() => setShowGhosts(!showGhosts)}><span className={`switch ${showGhosts ? 'on' : ''}`} /> include ghosts</button><button className="btn" data-testid="button-export-ledger" onClick={onExport}><Download size={13} /> Export CSV</button></div>;
+type DeviceSort = 'signal-strongest' | 'signal-weakest' | 'type' | 'vendor' | 'channel' | 'last-seen' | 'first-seen' | 'address';
+
+function FilterToolbar({ query, setQuery, protocol, setProtocol, showGhosts, setShowGhosts, sort, setSort, onExport }: { query: string; setQuery: (v: string) => void; protocol: string; setProtocol: (v: string) => void; showGhosts: boolean; setShowGhosts: (v: boolean) => void; sort: DeviceSort; setSort: (v: DeviceSort) => void; onExport: () => void }) {
+  return <div className="toolbar"><div className="search-box"><Search /><input data-testid="input-device-search" className="search-input" value={query} onChange={event => setQuery(event.target.value)} placeholder="Search MAC, vendor, type, name…" /></div><select data-testid="select-protocol" className="select-filter" value={protocol} onChange={event => setProtocol(event.target.value)}><option value="all">All protocols</option><option value="WiFi">WiFi</option><option value="BLE">BLE</option></select><label className="sort-control"><span>Sort</span><select data-testid="select-device-sort" className="select-filter" value={sort} onChange={event => setSort(event.target.value as DeviceSort)}><option value="signal-strongest">Signal · strongest first</option><option value="signal-weakest">Signal · weakest first</option><option value="type">Device type · A–Z</option><option value="vendor">Vendor · A–Z</option><option value="channel">Channel</option><option value="last-seen">Last seen · newest</option><option value="first-seen">First seen · oldest</option><option value="address">Address · A–Z</option></select></label><button data-testid="button-toggle-ghosts" className="toggle-filter" onClick={() => setShowGhosts(!showGhosts)}><span className={`switch ${showGhosts ? 'on' : ''}`} /> include ghosts</button><button className="btn" data-testid="button-export-ledger" onClick={onExport}><Download size={13} /> Export CSV</button></div>;
 }
 
 function Ledger({ devices, selectedId, onSelect, onFavorite, onExport }: { devices: RFDevice[]; selectedId: string; onSelect: (id: string) => void; onFavorite: (id: string) => void; onExport: () => void }) {
-  const [query, setQuery] = useState(''); const [protocol, setProtocol] = useState('all'); const [showGhosts, setShowGhosts] = useState(false);
-  const filtered = useMemo(() => devices.filter(device => (showGhosts || device.status !== 'ghost') && (protocol === 'all' || device.protocol === protocol) && [device.mac, device.vendor, device.node].join(' ').toLowerCase().includes(query.toLowerCase())), [devices, protocol, query, showGhosts]);
-  return <><div className="page-heading"><div><div className="page-kicker">Device ledger / 02</div><h1>Every signal leaves a trace.</h1><p>Search and review adapter observations. Signal strength is not a reliable distance estimate; network discovery does not reveal every client device.</p></div><div className="header-actions"><button className="btn btn-primary" data-testid="button-export-ledger-header" onClick={onExport}><FileDown size={14} /> Export ledger</button></div></div><div className="panel view-panel"><FilterToolbar {...{ query, setQuery, protocol, setProtocol, showGhosts, setShowGhosts, onExport }} /><div className="ledger-table-wrap">{filtered.length ? <table className="ledger-table"><thead><tr><th>Target</th><th>Vendor</th><th>Protocol</th><th>Signal</th><th>Proximity</th><th>Node</th><th>Last seen</th><th>Status</th><th /></tr></thead><tbody>{filtered.map(device => <tr key={device.id} data-testid={`ledger-row-${device.id}`} onClick={() => onSelect(device.id)}><td><span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}><button className="icon-button" data-testid={`ledger-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button><span className="strong">{device.mac}</span></span></td><td>{device.vendor}</td><td>{device.protocol}</td><td>{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null ? ` · ${device.signalQualityPercent}% quality` : ''}</td><td>{device.maxProximity}</td><td>{device.node}</td><td>{device.lastSeen}</td><td><span className={`state ${device.status}`}>{device.status}</span></td><td><ChevronRight size={14} /></td></tr>)}</tbody></table> : <div className="empty-state"><Filter size={23} /><h3>No matching observations</h3><p>Nothing in the ledger matches the current filters.</p></div>}</div></div></>;
+  const [query, setQuery] = useState(''); const [protocol, setProtocol] = useState('all'); const [showGhosts, setShowGhosts] = useState(false); const [sort, setSort] = useState<DeviceSort>('signal-strongest');
+  const filtered = useMemo(() => {
+    const matches = devices.filter(device => (showGhosts || device.status !== 'ghost') && (protocol === 'all' || device.protocol === protocol) && [device.mac, device.vendor, device.deviceType, device.node, device.details.ssid, device.details.localName, device.details.name].join(' ').toLowerCase().includes(query.toLowerCase()));
+    return matches.sort((a, b) => {
+      const textCompare = (left: string, right: string) => left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
+      switch (sort) {
+        case 'signal-strongest': return (b.signal ?? Number.NEGATIVE_INFINITY) - (a.signal ?? Number.NEGATIVE_INFINITY);
+        case 'signal-weakest': return (a.signal ?? Number.POSITIVE_INFINITY) - (b.signal ?? Number.POSITIVE_INFINITY);
+        case 'type': return textCompare(a.deviceType, b.deviceType) || textCompare(a.vendor, b.vendor);
+        case 'vendor': return textCompare(a.vendor, b.vendor) || textCompare(a.deviceType, b.deviceType);
+        case 'channel': return textCompare(a.channel, b.channel);
+        case 'last-seen': return (b.lastSeenTimestamp ?? 0) - (a.lastSeenTimestamp ?? 0);
+        case 'first-seen': return (a.firstSeenTimestamp ?? Number.POSITIVE_INFINITY) - (b.firstSeenTimestamp ?? Number.POSITIVE_INFINITY);
+        case 'address': return textCompare(a.mac, b.mac);
+      }
+    });
+  }, [devices, protocol, query, showGhosts, sort]);
+  return <><div className="page-heading"><div><div className="page-kicker">Device ledger / 02</div><h1>Every signal leaves a trace.</h1><p>Search and review adapter observations. Signal strength is not a reliable distance estimate; network discovery does not reveal every client device.</p></div><div className="header-actions"><button className="btn btn-primary" data-testid="button-export-ledger-header" onClick={onExport}><FileDown size={14} /> Export ledger</button></div></div><div className="panel view-panel"><FilterToolbar {...{ query, setQuery, protocol, setProtocol, showGhosts, setShowGhosts, sort, setSort, onExport }} /><div className="ledger-table-wrap">{filtered.length ? <table className="ledger-table"><thead><tr><th>Target</th><th>Vendor</th><th>Protocol</th><th>Signal</th><th>Proximity</th><th>Node</th><th>Last seen</th><th>Status</th><th /></tr></thead><tbody>{filtered.map(device => <tr key={device.id} data-testid={`ledger-row-${device.id}`} onClick={() => onSelect(device.id)}><td><span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}><button className="icon-button" data-testid={`ledger-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} /></button><span className="strong">{device.mac}</span></span></td><td>{device.vendor}</td><td>{device.protocol}</td><td>{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null ? ` · ${device.signalQualityPercent}% quality` : ''}</td><td>{device.maxProximity}</td><td>{device.node}</td><td>{device.lastSeen}</td><td><span className={`state ${device.status}`}>{device.status}</span></td><td><ChevronRight size={14} /></td></tr>)}</tbody></table> : <div className="empty-state"><Filter size={23} /><h3>No matching observations</h3><p>Nothing in the ledger matches the current filters.</p></div>}</div></div>{devices.find(device => device.id === selectedId) && <DeviceDetails device={devices.find(device => device.id === selectedId)!} />}</>;
 }
 
 function sensingMetricsFromSnapshot(snapshot: SensingSnapshot | null): SensingMetric[] {
@@ -392,15 +460,18 @@ function CapabilityIcon({ id }: { id: string }) {
   return <Cpu />;
 }
 
-function Hardware({ capabilities, refreshing, onRefresh, onRequest }: { capabilities: HardwareCapability[]; refreshing: boolean; onRefresh: () => void; onRequest: (id: HardwareCapability['id']) => void }) {
-  const connected = capabilities.filter(capability => capability.status === 'connected' || capability.status === 'ready').length;
-  const supported = capabilities.filter(capability => capability.status !== 'unsupported').length;
+function Hardware({ capabilities, refreshing, onRefresh, onRequest, isMobile, apiStatus }: { capabilities: HardwareCapability[]; refreshing: boolean; onRefresh: () => void; onRequest: (id: HardwareCapability['id']) => void; isMobile: boolean; apiStatus: ApiStatus }) {
+  const visibleCapabilities = isMobile ? capabilities.filter(capability => ['bluetooth', 'wifi'].includes(capability.id)) : capabilities;
+  const connected = visibleCapabilities.filter(capability => capability.status === 'connected' || capability.status === 'ready').length;
+  const supported = visibleCapabilities.filter(capability => capability.status !== 'unsupported').length;
   const statusLabel: Record<HardwareStatus, string> = { ready: 'ready', permission: 'permission needed', connected: 'connected', limited: 'limited', unsupported: 'not exposed' };
-  return <><div className="page-heading"><div><div className="page-kicker">Hardware bridge / 05</div><h1>Use what is already in hand.</h1><p>BackSpyne checks the current phone or computer, then enables only the capabilities that browser permissions and local hardware safely expose.</p></div><button className="btn btn-primary" data-testid="button-scan-hardware" onClick={onRefresh}>{refreshing ? <><RefreshCw className="spin" size={14} /> Scanning hardware</> : <><ScanLine size={14} /> Scan this device</>}</button></div>
-    <div className="signal-banner"><ShieldCheck /><span><strong>Permission-first hardware scan.</strong> No camera, microphone, location, Bluetooth, USB, or serial permission is requested until you choose a specific action.</span><span className="hardware-count">{connected}/{supported} usable</span></div>
-    <div className="stats-grid hardware-stats"><MetricCard label="Usable surfaces" value={String(connected).padStart(2, '0')} note="Ready or connected" icon={Cpu} /><MetricCard label="Permission gates" value={String(capabilities.filter(capability => capability.status === 'permission').length).padStart(2, '0')} note="Operator decision required" icon={Shield} /><MetricCard label="RF direct scan" value="RELAY" note="Browser boundary enforced" icon={Radio} /><MetricCard label="Profile" value="LOCAL" note="No cloud hardware relay" icon={Smartphone} /></div>
-    <div className="panel hardware-panel"><div className="panel-header"><div><div className="panel-title">Detected capability surface</div><div className="panel-subtitle">Results come from this device and this browser session</div></div><div className="status-pill"><span className="pulse-dot" /> DEVICE-AWARE</div></div><div className="capability-grid">{capabilities.map(capability => <div className={`capability-card ${capability.status}`} key={capability.id} data-testid={`hardware-${capability.id}`}><div className="capability-top"><div className="capability-icon"><CapabilityIcon id={capability.id} /></div><span className={`hardware-status ${capability.status}`}>{statusLabel[capability.status]}</span></div><div className="capability-label">{capability.label}</div><p>{capability.detail}</p><div className="capability-use"><span className="eyebrow">BackSpyne use</span><span>{capability.use}</span></div>{capability.action && <button className="btn capability-action" data-testid={`button-connect-${capability.action}`} onClick={() => onRequest(capability.id)}>{capability.status === 'connected' ? <><CheckCircle2 size={13} /> Connected</> : <><Plus size={13} /> Choose approved device</>}</button>}</div>)}</div></div>
-    <div className="panel hardware-note"><div className="panel-header"><div><div className="panel-title">Why nearby WiFi is different</div><div className="panel-subtitle">Browser security boundary</div></div><Wifi size={16} style={{ color: '#6a8c8b' }} /></div><div className="hardware-note-body"><p>Web pages cannot enumerate nearby WiFi access points. The local Python scanner must run on a host with appropriate OS permissions and supported adapter tools; it reports access points and BLE advertisements, not every nearby client device. CSI requires compatible hardware and a separate configured stream.</p><a className="btn" href="https://github.com/youknowzo" target="_blank" rel="noreferrer"><Github size={13} /> View PaperBagExpress on GitHub <ExternalLink size={12} /></a></div></div>
+  return <><div className={`page-heading ${isMobile ? 'mobile-scan-heading' : ''}`}><div><div className="page-kicker">{isMobile ? 'Phone radio access / 05' : 'Computer hardware bridge / 05'}</div><h1>{isMobile ? 'Scan with your phone.' : 'Scan with your computer.'}</h1><p>{isMobile ? 'This phone view reports only browser-exposed WiFi link status and optional BLE device selection. Mobile browsers cannot list nearby WiFi networks or passively scan all BLE advertisers.' : 'The browser cannot scan computer radios directly. Run the local BackSpyne bridge on this computer to scan nearby WiFi access points and BLE advertisements with OS-approved adapters.'}</p></div><button className="btn btn-primary" data-testid="button-scan-hardware" onClick={onRefresh}>{refreshing ? <><RefreshCw className="spin" size={14} /> Checking radios</> : <><ScanLine size={14} /> Check this device</>}</button></div>
+    <div className={`scan-status-banner ${apiStatus}`} role="status"><ShieldCheck /><span><strong>{apiStatus === 'error' ? 'Data service error.' : apiStatus === 'unavailable' ? 'Operator API unavailable.' : apiStatus === 'checking' ? 'Checking connection.' : 'Scan status.'}</strong> {apiStatus === 'error' ? 'The API returned an error while reading devices or relay nodes. Scans cannot be saved until the database connection is repaired.' : apiStatus === 'unavailable' ? 'Cannot connect to the operator API. Check the server and your connection before starting a relay.' : apiStatus === 'checking' ? 'Waiting for the operator API to report its status.' : 'A scan runs only when a local authorized scanner or supported radio action is actively reporting. No sample readings are generated.'}</span></div>
+    <div className="signal-banner"><ShieldCheck /><span><strong>{isMobile ? 'Phone-only radio access.' : 'Computer-local radio scan.'}</strong> {isMobile ? 'No camera, microphone, location, motion sensor, or background activity is used for RF scanning.' : 'The local bridge uses the computer’s WiFi and Bluetooth hardware. Grant any OS permission prompts on that computer.'}</span><span className="hardware-count">{connected}/{supported} usable</span></div>
+    <div className="stats-grid hardware-stats"><MetricCard label="Usable radios" value={String(connected).padStart(2, '0')} note="Available to this browser" icon={Cpu} /><MetricCard label="Permission gates" value={String(visibleCapabilities.filter(capability => capability.status === 'permission').length).padStart(2, '0')} note="Operator decision required" icon={Shield} /><MetricCard label="RF scan path" value={isMobile ? 'PHONE' : 'LOCAL'} note={isMobile ? 'Browser-exposed phone features only' : 'Computer OS bridge required'} icon={Radio} /><MetricCard label="Relay" value={apiStatus === 'connected' ? 'API OK' : 'BLOCKED'} note={apiStatus === 'connected' ? 'Waiting for scanner heartbeat' : 'Data service not ready'} icon={Smartphone} /></div>
+    <div className="panel hardware-panel"><div className="panel-header"><div><div className="panel-title">Detected capability surface</div><div className="panel-subtitle">Results come from this device and this browser session</div></div><div className="status-pill"><span className="pulse-dot" /> DEVICE-AWARE</div></div><div className="capability-grid">{visibleCapabilities.map(capability => <div className={`capability-card ${capability.status}`} key={capability.id} data-testid={`hardware-${capability.id}`}><div className="capability-top"><div className="capability-icon"><CapabilityIcon id={capability.id} /></div><span className={`hardware-status ${capability.status}`}>{statusLabel[capability.status]}</span></div><div className="capability-label">{capability.label}</div><p>{capability.detail}</p><div className="capability-use"><span className="eyebrow">BackSpyne use</span><span>{capability.use}</span></div>{capability.action && <button className="btn capability-action" data-testid={`button-connect-${capability.action}`} onClick={() => onRequest(capability.id)}>{capability.status === 'connected' ? <><CheckCircle2 size={13} /> Connected</> : <><Plus size={13} /> Choose approved device</>}</button>}</div>)}</div></div>
+    {!isMobile && <div className="panel desktop-bridge-guide"><div className="panel-header"><div><div className="panel-title">Start scanning with this computer</div><div className="panel-subtitle">The bridge reads real OS WiFi and Bluetooth adapters</div></div><Cpu size={16} style={{ color: '#6a8c8b' }} /></div><div className="bridge-guide-body"><ol><li>On the computer, open the BackSpyne project and go to its <strong>scanner</strong> folder.</li><li>Copy <code>.env.example</code> to <code>.env</code>. Set the operator ID and node token to match the server secrets; never share or commit them.</li><li>Run <code>start.ps1</code> on Windows, <code>start.sh</code> on macOS/Linux, or <code>start.bat</code> on Windows Command Prompt.</li><li>Keep the bridge running. The page will switch to <strong>Relay active</strong> after a signed heartbeat reaches the server.</li></ol><p>WiFi and BLE scans use OS permissions and adapters on that computer. A browser tab cannot start local programs by itself. If the API/data service is reporting an error above, scans cannot be saved until the server database is repaired.</p></div></div>}
+    <div className="panel hardware-note"><div className="panel-header"><div><div className="panel-title">{isMobile ? 'What your phone can scan' : 'What the local bridge can scan'}</div><div className="panel-subtitle">Real device and operating-system limits</div></div><Wifi size={16} style={{ color: '#6a8c8b' }} /></div><div className="hardware-note-body"><div><p>{isMobile ? 'Mobile browsers do not expose nearby WiFi access-point lists. Motion, location, battery, camera, and microphone are not RF scanning. Some Android browsers offer user-selected BLE device connections, but not passive discovery of every advertiser; iOS browsers may not expose Web Bluetooth. A dedicated native app or local scanner hardware is needed for broader scans.' : 'The local Python scanner uses OS-approved WiFi scan APIs and BLE adapter scans on this computer. It reports access points and visible BLE advertisements only—not every nearby phone or client. CSI requires separately configured compatible hardware. A browser cannot start the scanner process itself.'}</p>{isMobile && <p className="phone-scan-note">This phone view intentionally offers only WiFi status and browser-exposed Bluetooth access. It does not request camera, microphone, location, motion, USB, or serial permissions.</p>}</div></div></div>
   </>;
 }
 
@@ -433,6 +504,15 @@ function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
   const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload as Record<string, unknown> :
     metadata.payload && typeof metadata.payload === 'object' ? metadata.payload as Record<string, unknown> : {};
   const protocol = raw.protocol === 'BLE' || payload.source === 'ble_adapter' ? 'BLE' : raw.protocol === 'WiFi' || payload.source === 'wifi_os_api' ? 'WiFi' : 'system';
+  const addressType = liveText(payload.addressType, (() => {
+    const firstOctet = Number.parseInt(address.split(/[:-]/)[0] || '', 16);
+    return Number.isFinite(firstOctet) ? firstOctet & 0x02 ? 'private/randomized address' : firstOctet & 0x01 ? 'multicast address' : 'globally administered address' : 'unknown address type';
+  })());
+  const observedVendor = liveText(raw.vendor, 'Unknown vendor');
+  const advertisedManufacturer = liveText(payload.advertisedManufacturer, '');
+  const vendor = observedVendor !== 'Unknown vendor' ? observedVendor : advertisedManufacturer || observedVendor;
+  const vendorBasis = observedVendor !== 'Unknown vendor' ? 'Hardware address prefix (local OUI match)' : advertisedManufacturer ? 'BLE manufacturer-specific data (company code)' : addressType === 'private/randomized address' ? 'Unavailable: address is randomized' : 'No manufacturer evidence reported';
+  const deviceType = protocol === 'WiFi' ? 'Wi-Fi access point' : protocol === 'BLE' ? 'Bluetooth LE advertiser' : 'Radio observation';
   const seenAt = liveText(raw.lastSeenAt, '');
   const parsedAt = seenAt ? new Date(seenAt).getTime() : Number.NaN;
   const ageSeconds = Number.isFinite(parsedAt) ? Math.max(0, Math.floor((Date.now() - parsedAt) / 1000)) : Number.POSITIVE_INFINITY;
@@ -440,14 +520,20 @@ function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
   return {
     id: liveText(raw.id, `live-${address}`),
     mac: address,
-    vendor: liveText(raw.vendor, 'Unknown vendor'),
+    vendor,
+    vendorBasis,
+    deviceType,
+    addressType,
     protocol,
+    details: { ...payload, serviceUuids: raw.serviceUuids ?? metadata.serviceUuids ?? [] },
     signal,
     signalQualityPercent: quality,
     maxProximity: 'Not measured',
     status: ageSeconds <= 60 ? 'active' : ageSeconds <= staleLimit ? 'idle' : 'ghost',
     lastSeen: timeAgo(seenAt),
     firstSeen: timeAgo(liveText(raw.firstSeenAt, '')),
+    lastSeenTimestamp: Number.isFinite(parsedAt) ? parsedAt : null,
+    firstSeenTimestamp: typeof raw.firstSeenAt === 'string' && Number.isFinite(new Date(raw.firstSeenAt).getTime()) ? new Date(raw.firstSeenAt).getTime() : null,
     node: liveText(raw.nodeName, liveText(raw.node, 'Authorized relay')),
     channel: liveText(raw.channel, liveText(payload.channel, 'not reported')),
     favorite: Boolean(raw.favorite),
@@ -476,12 +562,19 @@ function Home() {
   const [selectedId, setSelectedId] = useState('');
   const [liveMode, setLiveMode] = useState(false);
   const [apiConnected, setApiConnected] = useState(false);
+  const [apiStatus, setApiStatus] = useState<ApiStatus>('checking');
+  const [isMobile, setIsMobile] = useState(isMobileProfile);
   const [sensingSnapshot, setSensingSnapshot] = useState<SensingSnapshot | null>(null);
   const [trail, setTrail] = useState<DeviceSighting[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const { signOut } = useClerk();
   const { isSignedIn } = useUser();
   useEffect(() => { void refreshHardware(); }, []);
+  useEffect(() => {
+    const updateDeviceProfile = () => setIsMobile(isMobileProfile());
+    window.addEventListener('resize', updateDeviceProfile);
+    return () => window.removeEventListener('resize', updateDeviceProfile);
+  }, []);
   useEffect(() => {
     if (!isSignedIn) return;
     let disposed = false;
@@ -492,6 +585,7 @@ function Home() {
           fetch('/api/nodes', { credentials: 'include' }),
         ]);
         if (devicesResponse.status === 401 || nodesResponse.status === 401 || devicesResponse.status === 503 || nodesResponse.status === 503) {
+          setApiStatus('unavailable');
           setApiConnected(false);
           setLiveMode(false);
           setScanning(false);
@@ -499,9 +593,13 @@ function Home() {
           setNodes([]);
           return;
         }
-        if (!devicesResponse.ok || !nodesResponse.ok || disposed) throw new Error('Failed to load BackSpyne data');
+        if (!devicesResponse.ok || !nodesResponse.ok || disposed) {
+          setApiStatus('error');
+          throw new Error(`BackSpyne data request failed (${devicesResponse.status}/${nodesResponse.status})`);
+        }
         const devicePayload = await devicesResponse.json() as { devices?: Array<Record<string, unknown>> };
         const nodePayload = await nodesResponse.json() as { nodes?: Array<Record<string, unknown>> };
+        setApiStatus('connected');
         setApiConnected(true);
         setDevices((devicePayload.devices ?? []).map(liveDeviceFromApi).filter((device): device is RFDevice => device !== null));
         setNodes((nodePayload.nodes ?? []).map(liveNodeFromApi));
@@ -514,6 +612,7 @@ function Home() {
           setSensingSnapshot(sensingPayload.latest ?? null);
         }
       } catch {
+        setApiStatus(current => current === 'unavailable' ? current : 'error');
         setApiConnected(false);
         setLiveMode(false);
         setScanning(false);
@@ -537,6 +636,7 @@ function Home() {
       try {
         const payload = JSON.parse(event.data) as { nodeId?: string; observations?: Array<Record<string, unknown>> };
         if (disposed) return;
+        setApiStatus('connected');
         setApiConnected(true);
         setScanning(true);
         setLiveMode(true);
@@ -604,10 +704,11 @@ function Home() {
   const refreshHardware = async () => { setHardwareRefreshing(true); try { setHardware(await scanHardwareCapabilities()); } finally { setHardwareRefreshing(false); } };
   const requestHardware = async (id: HardwareCapability['id']) => {
     const hardwareNavigator = navigator as HardwareNavigator;
+    const setCapability = (status: HardwareStatus, detail: string) => setHardware(current => current.map(capability => capability.id === id ? { ...capability, status, detail } : capability));
     try {
       if (id === 'bluetooth' && hardwareNavigator.bluetooth?.requestDevice) {
         const device = await hardwareNavigator.bluetooth.requestDevice({ acceptAllDevices: true });
-        setHardware(current => current.map(capability => capability.id === id ? { ...capability, status: 'connected', detail: `${device.name ?? 'Approved BLE peripheral'} selected. BackSpyne can use it through a local adapter.` } : capability));
+        setCapability('permission', `${device.name ?? 'BLE peripheral'} selected and approved. Selection alone does not connect to it or scan advertisements; use a scanner bridge for measured observations.`);
       }
       if (id === 'usb' && hardwareNavigator.usb?.requestDevice) {
         await hardwareNavigator.usb.requestDevice({ filters: [] });
@@ -617,6 +718,9 @@ function Home() {
         await hardwareNavigator.serial.requestPort({ filters: [] });
         setHardware(current => current.map(capability => capability.id === id ? { ...capability, status: 'connected', detail: 'Approved serial port selected. A local Python bridge can stream observations through it.' } : capability));
       }
+      if (id === 'bluetooth' && !hardwareNavigator.bluetooth?.requestDevice) setCapability('unsupported', 'This browser or mobile operating system does not expose Bluetooth device selection.');
+      if (id === 'usb' && !hardwareNavigator.usb?.requestDevice) setCapability('unsupported', 'This browser or device does not expose USB device selection.');
+      if (id === 'serial' && !hardwareNavigator.serial?.requestPort) setCapability('unsupported', 'This browser or device does not expose serial port selection.');
       if (id === 'camera-mic' && navigator.mediaDevices?.getUserMedia) {
         const media = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         media.getTracks().forEach(track => track.stop());
@@ -626,20 +730,30 @@ function Home() {
         await new Promise<void>((resolve, reject) => navigator.geolocation.getCurrentPosition(() => resolve(), reject, { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 }));
         setHardware(current => current.map(capability => capability.id === id ? { ...capability, status: 'connected', detail: 'Location permission granted. Coordinates remain local to this browser session.' } : capability));
       }
-    } catch {
-      setHardware(current => current.map(capability => capability.id === id ? { ...capability, status: 'limited', detail: 'Permission was not granted. Choose the action again to retry.' } : capability));
+    } catch (error) {
+      const cancelled = error instanceof DOMException && error.name === 'NotFoundError';
+      setCapability('limited', cancelled ? 'No device was selected. No scan was started.' : 'Permission was denied or the device is unavailable. Check OS/browser permissions and try again.');
     }
   };
-  const exportLedger = () => { const columns = ['id', 'mac', 'vendor', 'protocol', 'signalDbm', 'signalQualityPercent', 'proximity', 'status', 'lastSeen', 'firstSeen', 'node', 'channel', 'favorite']; const csv = [columns.join(','), ...devices.map(device => columns.map(key => JSON.stringify(({ signalDbm: device.signal, proximity: device.maxProximity } as Record<string, unknown>)[key] ?? device[key as keyof RFDevice] ?? '')).join(','))].join('\n'); const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = 'backspyne-device-ledger.csv'; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); };
+  const exportLedger = () => {
+    const columns = ['id', 'mac', 'vendor', 'vendorBasis', 'deviceType', 'addressType', 'protocol', 'signalDbm', 'signalQualityPercent', 'proximity', 'status', 'lastSeen', 'firstSeen', 'node', 'channel', 'favorite'];
+    const csv = [columns.join(','), ...devices.map(device => columns.map(key => JSON.stringify(({ signalDbm: device.signal, proximity: device.maxProximity } as Record<string, unknown>)[key] ?? device[key as keyof RFDevice] ?? '')).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'backspyne-device-ledger.csv';
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
    const onSignOut = async () => {
      if (sessionId) await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', credentials: 'include' }).catch(() => undefined);
      await signOut({ redirectUrl: basePath || '/' });
-   };
-   return <div className="app-shell"><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected }} /><div className="main-content"><Topbar view={view} scanning={scanning} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} />}</main></div></div>;
+   };    return <div className={`app-shell ${isMobile ? 'mobile-device' : 'desktop-device'}`}><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected, apiStatus }} /><div className="main-content"><Topbar view={view} scanning={scanning} apiStatus={apiStatus} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, apiStatus, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} isMobile={isMobile} apiStatus={apiStatus} />}</main></div></div>;
 }
 
 function Landing() {
-  return <div className="landing-shell"><div className="landing-grid" /><div className="landing-inner"><Brand /><div className="landing-hero"><div className="page-kicker">BackSpyne by PaperBagExpress</div><h1>Know what is nearby.<br /><span>Keep the signal local.</span></h1><p>Privacy-first RF observability for authorized environments. Connect approved sensor nodes, inspect measurements, and keep every observation accountable.</p><div className="landing-actions"><a className="btn btn-primary" href={`${basePath}/sign-in`}>Enter operator portal <ChevronRight size={14} /></a><a className="btn landing-secondary" href={`${basePath}/sign-up`}>Create access</a></div><div className="landing-proof"><span><ShieldCheck size={14} /> Permission-first hardware</span><span><Radio size={14} /> Local bridge ready</span><span><Github size={14} /> Open operator identity</span></div></div><div className="landing-footer"><span>Authorized environments only.</span><span>© PaperBagExpress · BackSpyne</span><a href="/legal" className="legal-link">Legal & Privacy</a></div></div></div>;
+  return <div className="landing-shell"><div className="landing-grid" /><div className="landing-inner"><Brand /><div className="landing-hero"><div className="page-kicker">BackSpyne by PaperBagExpress</div><h1>Know what is nearby.<br /><span>Keep the signal local.</span></h1><p>Privacy-first RF observability for authorized environments. Connect approved sensor nodes, inspect measurements, and keep every observation accountable.</p><div className="landing-actions"><a className="btn btn-primary" href={`${basePath}/sign-in`}>Enter operator portal <ChevronRight size={14} /></a><a className="btn landing-secondary" href={`${basePath}/sign-up`}>Create access</a></div><div className="landing-proof"><span><ShieldCheck size={14} /> Permission-first hardware</span><span><Radio size={14} /> Local bridge ready</span><span><ShieldCheck size={14} /> Operator-controlled access</span></div></div><div className="landing-footer"><span>Authorized environments only.</span><span>© PaperBagExpress · BackSpyne</span><a href="/legal" className="legal-link">Legal & Privacy</a></div></div></div>;
 }
 
 function SignInPage() {

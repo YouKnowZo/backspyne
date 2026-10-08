@@ -468,7 +468,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       if (typeof observation.address !== "string" || !/^[0-9A-Fa-f:.-]{1,80}$/.test(observation.address)) continue;
       const deviceId = id("device");
       const existing = await db
-        .select({ id: rfDevices.id })
+        .select({ id: rfDevices.id, vendor: rfDevices.vendor, channel: rfDevices.channel, metadata: rfDevices.metadata })
         .from(rfDevices)
         .where(
           and(
@@ -481,17 +481,39 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       const observationProtocol = source === "ble_adapter" ? "BLE" as const : source === "wifi_os_api" ? "WiFi" as const : normalizedProtocol;
       const observationPayload = { ...(observation.payload || {}) };
       delete observationPayload.source;
+      const priorMetadata = existing[0]?.metadata ?? {};
+      const priorPayload = priorMetadata.payload && typeof priorMetadata.payload === "object"
+        ? priorMetadata.payload as Record<string, unknown>
+        : {};
+      const mergedPayload: Record<string, unknown> = {
+        ...priorPayload,
+        ...Object.fromEntries(Object.entries(observationPayload).filter(([, value]) => value !== null && value !== "")),
+      };
+      if (priorPayload.manufacturerData && observationPayload.manufacturerData && typeof priorPayload.manufacturerData === "object" && typeof observationPayload.manufacturerData === "object") {
+        mergedPayload.manufacturerData = {
+          ...priorPayload.manufacturerData as Record<string, unknown>,
+          ...observationPayload.manufacturerData as Record<string, unknown>,
+        };
+      }
+      const currentServiceUuids = observation.serviceUuids?.filter((uuid) => typeof uuid === "string") || [];
+      const priorServiceUuids = Array.isArray(priorMetadata.serviceUuids) ? priorMetadata.serviceUuids.filter((uuid): uuid is string => typeof uuid === "string") : [];
+      const submittedVendor = typeof observation.vendor === "string" ? observation.vendor.slice(0, 120) : "Unknown vendor";
       const values = {
         ownerId: body.ownerId,
         address: observation.address.slice(0, 80),
-        vendor: typeof observation.vendor === "string" ? observation.vendor.slice(0, 120) : "Unknown vendor",
+        vendor: submittedVendor !== "Unknown vendor"
+          ? submittedVendor
+          : observationProtocol === "BLE" || observationPayload.addressType === "private/randomized address"
+            ? "Unknown vendor"
+            : (existing[0]?.vendor ?? submittedVendor),
         protocol: observationProtocol,
         lastSignalDbm: validSignal(observation.signalDbm) ? observation.signalDbm : null,
-        channel: typeof observation.channel === "string" ? observation.channel.slice(0, 40) : null,
+        channel: typeof observation.channel === "string" ? observation.channel.slice(0, 40) : existing[0]?.channel ?? null,
         lastSeenAt: event.observedAt,
         metadata: {
-          serviceUuids: observation.serviceUuids || [],
-          payload: observationPayload,
+          ...priorMetadata,
+          serviceUuids: [...new Set([...priorServiceUuids, ...currentServiceUuids])].slice(0, 64),
+          payload: mergedPayload,
         },
       };
       if (existing[0]) {

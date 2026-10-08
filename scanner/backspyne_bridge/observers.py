@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from .vendor import vendor_for
+from .vendor import address_kind, ble_manufacturer_for, vendor_for
 
 LOGGER = logging.getLogger("backspyne.bridge")
 
@@ -110,7 +110,7 @@ class WifiObserver:
                         "vendor": vendor_for(address),
                         "signalQualityPercent": int(signal_percent) if signal_percent is not None else None,
                         "channel": channel or None,
-                        "payload": {"ssid": ssid, "security": security, "source": "wifi_os_api"},
+                        "payload": {"ssid": ssid, "security": security, "addressType": address_kind(address), "source": "wifi_os_api"},
                     }
                 )
             if observations:
@@ -137,7 +137,7 @@ class WifiObserver:
                     if current:
                         observations.append(current)
                     address = bss.group(1).upper()
-                    current = {"address": address, "vendor": vendor_for(address), "payload": {"source": "wifi_os_api"}}
+                    current = {"address": address, "vendor": vendor_for(address), "payload": {"addressType": address_kind(address), "source": "wifi_os_api"}}
                     continue
                 if current:
                     ssid = re.search(r"^\s*SSID:\s*(.*)$", line)
@@ -184,6 +184,7 @@ class WifiObserver:
                 "payload": {
                     "ssid": network.ssid() or "",
                     "security": str(network.security()) if hasattr(network, "security") else "unknown",
+                    "addressType": address_kind(address),
                     "source": "wifi_os_api",
                 },
             })
@@ -210,7 +211,7 @@ class WifiObserver:
                 if current:
                     observations.append(current)
                 address = bssid.group(1).upper()
-                current = {"address": address, "vendor": vendor_for(address), "payload": {"ssid": current_ssid, "source": "wifi_os_api"}}
+                current = {"address": address, "vendor": vendor_for(address), "payload": {"ssid": current_ssid, "addressType": address_kind(address), "source": "wifi_os_api"}}
                 continue
             if current:
                 signal = re.search(r"Signal\s*:\s*(\d+)%", line)
@@ -247,13 +248,17 @@ class BleObserver:
             observations.append(
                 {
                     "address": address.upper(),
-                    "vendor": vendor_for(address),
+                    "vendor": "Unknown vendor",
                     "signalDbm": getattr(advertisement, "rssi", None),
                     "serviceUuids": list(getattr(advertisement, "service_uuids", []) or []),
                     "payload": {
                         "source": "ble_adapter",
                         "name": getattr(device, "name", None),
                         "localName": getattr(advertisement, "local_name", None),
+                        "addressType": "BLE address type not exposed by adapter",
+                        "advertisedManufacturer": ble_manufacturer_for(
+                            getattr(advertisement, "manufacturer_data", {}) or {}
+                        ),
                         "manufacturerData": {
                             str(key): value.hex()
                             for key, value in (getattr(advertisement, "manufacturer_data", {}) or {}).items()
