@@ -7,15 +7,18 @@ import unittest
 # collapse in the flattened OUI_PREFIXES mapping) can be detected here.
 from backspyne_bridge.vendor import (
     BASIS_BLE,
+    BASIS_MASKED,
     BASIS_NONE,
     BASIS_OUI,
     BASIS_RANDOMIZED,
+    BASIS_REGISTRY,
     BLE_COMPANIES,
     OUI_PREFIXES,
     UNKNOWN_VENDOR,
     _OUI_ASSIGNMENTS,
     address_kind,
     ble_manufacturer_for,
+    registry_vendor,
     vendor_category,
     vendor_for,
     vendor_hint_from_name,
@@ -23,7 +26,7 @@ from backspyne_bridge.vendor import (
 )
 
 PROFILE_KEYS = {"vendor", "category", "ouiPrefix", "basis", "evidenceQuality"}
-BASIS_VALUES = {BASIS_OUI, BASIS_BLE, BASIS_RANDOMIZED, BASIS_NONE}
+BASIS_VALUES = {BASIS_OUI, BASIS_REGISTRY, BASIS_BLE, BASIS_RANDOMIZED, BASIS_MASKED, BASIS_NONE}
 
 # Flat fixtures: 0x02 bit clear (globally administered), low bit clear (unicast).
 GLOBALLY_ADMINISTERED_APPLE = "00:03:93:12:34:56"
@@ -75,12 +78,16 @@ class AddressKindTests(unittest.TestCase):
 
 class VendorLookupTests(unittest.TestCase):
     def test_known_prefix_resolves_to_its_vendor(self) -> None:
+        # The authoritative IEEE registry supplies the name for an assigned prefix, so
+        # the exact spelling belongs to that dataset; the curated table is the fallback.
         profile = vendor_profile(GLOBALLY_ADMINISTERED_APPLE)
-        self.assertEqual(profile["vendor"], "Apple, Inc.")
         self.assertEqual(profile["ouiPrefix"], "000393")
-        self.assertEqual(profile["basis"], BASIS_OUI)
+        self.assertIn(profile["basis"], (BASIS_REGISTRY, BASIS_OUI))
         self.assertGreaterEqual(profile["evidenceQuality"], 80)
-        self.assertEqual(vendor_for(GLOBALLY_ADMINISTERED_APPLE), "Apple, Inc.")
+        self.assertTrue(str(profile["vendor"]).lower().startswith("apple"))
+        expected = registry_vendor("000393") or OUI_PREFIXES["000393"]
+        self.assertEqual(profile["vendor"], expected)
+        self.assertEqual(vendor_for(GLOBALLY_ADMINISTERED_APPLE), expected)
 
     def test_randomized_address_is_never_attributed(self) -> None:
         profile = vendor_profile(RANDOMIZED)
@@ -97,6 +104,8 @@ class VendorLookupTests(unittest.TestCase):
         self.assertEqual(vendor_for(MULTICAST), UNKNOWN_VENDOR)
 
     def test_unassigned_globally_administered_address_stays_unknown(self) -> None:
+        if registry_vendor(GLOBALLY_ADMINISTERED_UNASSIGNED[:6]):
+            self.skipTest(f"{GLOBALLY_ADMINISTERED_UNASSIGNED[:8]} is assigned in the current registry")
         profile = vendor_profile(GLOBALLY_ADMINISTERED_UNASSIGNED)
         self.assertEqual(profile["vendor"], UNKNOWN_VENDOR)
         self.assertIsNone(profile["ouiPrefix"])
@@ -121,8 +130,9 @@ class VendorLookupTests(unittest.TestCase):
 
     def test_reviewed_prefix_wins_over_a_company_code(self) -> None:
         profile = vendor_profile(GLOBALLY_ADMINISTERED_APPLE, {0x0075: b"\x01"})
-        self.assertEqual(profile["vendor"], "Apple, Inc.")
-        self.assertEqual(profile["basis"], BASIS_OUI)
+        self.assertEqual(profile["vendor"], registry_vendor("000393") or OUI_PREFIXES["000393"])
+        self.assertIn(profile["basis"], (BASIS_REGISTRY, BASIS_OUI))
+        self.assertNotEqual(profile["basis"], BASIS_BLE)
 
     def test_empty_manufacturer_data_returns_none(self) -> None:
         self.assertIsNone(ble_manufacturer_for(None))
@@ -173,8 +183,30 @@ class VendorNameHintTests(unittest.TestCase):
                 self.assertIsNone(vendor_hint_from_name(name))
 
     def test_a_name_hint_never_changes_the_resolved_vendor(self):
-        address = "B0:19:21:5C:44:7A"
-        profile = vendor_profile(address)
-        self.assertEqual(profile["vendor"], vendor_for(address))
-        self.assertNotEqual(profile["basis"], BASIS_BLE)
+        # A hint can only ever be reported beside the vendor, never as the vendor. A BLE
+        # advertiser with a randomized address is the case where no prefix can help.
+        self.assertEqual(vendor_hint_from_name("TP-Link_447C"), "TP-Link Technologies")
+        profile = vendor_profile(RANDOMIZED)
+        self.assertEqual(profile["vendor"], UNKNOWN_VENDOR)
+        self.assertEqual(profile["basis"], BASIS_RANDOMIZED)
         self.assertLessEqual(profile["evidenceQuality"], 20)
+
+    def test_wifi_masking_is_reported_separately_from_a_ble_privacy_address(self) -> None:
+        # Windows hands masked BSSIDs to callers without location access; a BLE privacy
+        # address is genuinely the device's own. Only the caller knows which is which.
+        masked = vendor_profile(RANDOMIZED, observation_kind="wifi")
+        self.assertEqual(masked["vendor"], UNKNOWN_VENDOR)
+        self.assertIsNone(masked["ouiPrefix"])
+        self.assertEqual(masked["basis"], BASIS_MASKED)
+        self.assertEqual(masked["evidenceQuality"], 0)
+        for call in (vendor_profile(RANDOMIZED), vendor_profile(RANDOMIZED, observation_kind="ble")):
+            with self.subTest(call=call["basis"]):
+                self.assertEqual(call["basis"], BASIS_RANDOMIZED)
+                self.assertEqual(call["evidenceQuality"], 10)
+        # A multicast WiFi address is not host masking.
+        self.assertEqual(vendor_profile(MULTICAST, observation_kind="wifi")["basis"], BASIS_RANDOMIZED)
+        # A globally administered address is unaffected by the new parameter.
+        self.assertEqual(
+            vendor_profile(GLOBALLY_ADMINISTERED_APPLE, observation_kind="wifi")["vendor"],
+            vendor_profile(GLOBALLY_ADMINISTERED_APPLE)["vendor"],
+        )

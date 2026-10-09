@@ -36,6 +36,21 @@ def _with_name_hints(observations: list[dict[str, Any]]) -> list[dict[str, Any]]
     return observations
 
 
+def _annotate_wifi(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Record whether the host operating system handed us a masked BSSID.
+
+    Real access points use globally administered addresses, so a locally administered
+    WiFi BSSID means the OS replaced it (Windows does this for callers without location
+    access). The address is still reported as observed, but the flag lets the console
+    explain why no vendor can be resolved instead of implying an unknown device.
+    """
+    for observation in observations:
+        payload = observation.get("payload")
+        if isinstance(payload, dict):
+            payload["addressMasked"] = address_kind(observation.get("address")) == "private/randomized address"
+    return observations
+
+
 def _run(command: list[str], timeout: float = 12.0) -> str:
     try:
         completed = subprocess.run(
@@ -96,11 +111,11 @@ class WifiObserver:
     def scan(self) -> list[dict[str, Any]]:
         system = platform.system()
         if system == "Linux":
-            return _with_name_hints(self._linux())
+            return _annotate_wifi(_with_name_hints(self._linux()))
         if system == "Darwin":
-            return _with_name_hints(self._macos())
+            return _annotate_wifi(_with_name_hints(self._macos()))
         if system == "Windows":
-            return _with_name_hints(self._windows())
+            return _annotate_wifi(_with_name_hints(self._windows()))
         return []
 
     def _linux(self) -> list[dict[str, Any]]:
@@ -127,7 +142,7 @@ class WifiObserver:
                 if not re.fullmatch(r"[0-9A-Fa-f:]{17}", address):
                     continue
                 signal_percent = _number(signal)
-                profile = vendor_profile(address)
+                profile = vendor_profile(address, observation_kind="wifi")
                 observations.append(
                     {
                         "address": address.upper(),
@@ -170,7 +185,7 @@ class WifiObserver:
                     if current:
                         observations.append(current)
                     address = bss.group(1).upper()
-                    profile = vendor_profile(address)
+                    profile = vendor_profile(address, observation_kind="wifi")
                     current = {
                         "address": address,
                         "vendor": vendor_for(address),
@@ -221,7 +236,7 @@ class WifiObserver:
             if not address:
                 continue
             channel = network.wlanChannel()
-            profile = vendor_profile(address)
+            profile = vendor_profile(address, observation_kind="wifi")
             observations.append({
                 "address": address.upper(),
                 "vendor": vendor_for(address),
@@ -261,7 +276,7 @@ class WifiObserver:
                 if current:
                     observations.append(current)
                 address = bssid.group(1).upper()
-                profile = vendor_profile(address)
+                profile = vendor_profile(address, observation_kind="wifi")
                 current = {
                     "address": address,
                     "vendor": vendor_for(address),
@@ -309,7 +324,7 @@ class BleObserver:
             if not address:
                 continue
             manufacturer_data = getattr(advertisement, "manufacturer_data", {}) or {}
-            profile = vendor_profile(address, manufacturer_data)
+            profile = vendor_profile(address, manufacturer_data, observation_kind="ble")
             observations.append(
                 {
                     "address": address.upper(),

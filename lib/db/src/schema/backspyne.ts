@@ -1,5 +1,6 @@
 import {
   boolean,
+  index,
   jsonb,
   pgEnum,
   pgTable,
@@ -125,6 +126,23 @@ export const subscriptions = pgTable("backspyne_subscriptions", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Per-operator relay pairing credentials. The plaintext token is shown once at
+// creation and only its SHA-256 digest is stored, so a database read cannot be replayed
+// as an ingest credential. Revoking sets `revokedAt`; rows are never deleted, which
+// keeps an audit trail of which relay reported which measurements.
+export const relayTokens = pgTable("backspyne_relay_tokens", {
+  id: text("id").primaryKey(),
+  ownerId: text("owner_id").notNull(),
+  label: text("label").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+}, (table) => ({
+  tokenHashUnique: uniqueIndex("backspyne_relay_tokens_token_hash_unique").on(table.tokenHash),
+  ownerIndex: index("backspyne_relay_tokens_owner_index").on(table.ownerId),
+}));
+
 // One row per processed Stripe event id, which makes webhook handling idempotent.
 export const billingEvents = pgTable("backspyne_billing_events", {
   id: text("id").primaryKey(),
@@ -149,6 +167,7 @@ export type TelemetryEvent = typeof telemetryEvents.$inferSelect;
 export type EvidenceRecord = typeof evidenceRecords.$inferSelect;
 export type SensingSnapshot = typeof sensingSnapshots.$inferSelect;
 export type Subscription = typeof subscriptions.$inferSelect;
+export type RelayToken = typeof relayTokens.$inferSelect;
 export type BillingEvent = typeof billingEvents.$inferSelect;
 
 export const telemetryObservationSchema = z.object({

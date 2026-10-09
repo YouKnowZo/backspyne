@@ -18,13 +18,13 @@ import { Redirect, Route, Switch, Router as WouterRouter, useLocation } from 'wo
 
 type RFDevice = {
   id: string; mac: string; vendor: string; vendorBasis: string; deviceType: string; addressType: string;
-  vendorCategory?: string | null; vendorOui?: string | null; evidenceQuality?: number | null;
+  vendorCategory?: string | null; vendorOui?: string | null; evidenceQuality?: number | null; addressMasked: boolean;
   protocol: 'WiFi' | 'BLE' | 'CSI' | 'system'; signal: number | null; signalQualityPercent: number | null;
   maxProximity: string; status: 'active' | 'idle' | 'ghost'; lastSeen: string; firstSeen: string;
   node: string; channel: string; favorite: boolean; details: Record<string, unknown>;
   lastSeenTimestamp: number | null; firstSeenTimestamp: number | null;
 };
-type ScanNode = { id: string; name: string; address: string; status: 'online' | 'offline'; lastSeen: string; devices: number; role: string };
+type ScanNode = { id: string; name: string; address: string; status: 'online' | 'offline'; lastSeen: string; lastSeenTimestamp: number | null; devices: number; role: string };
 type SensingMetric = { label: string; value: string; unit: string; status: string; trend: string };
 type SensingSnapshot = { id: string; observedAt: string; metrics: Record<string, unknown>; confidence?: number | null; uncertainty?: Record<string, unknown> };
 type DeviceSighting = { observedAt: string; signalDbm: number | null; distanceMeters: number | null };
@@ -349,6 +349,7 @@ function DeviceDetails({ device }: { device: RFDevice }) {
   const serviceUuids = Array.isArray(device.details.serviceUuids) ? device.details.serviceUuids.filter((uuid): uuid is string => typeof uuid === 'string') : [];
   const values: Array<[string, string]> = [
     ['Device class', device.deviceType], ['Vendor evidence', device.vendorBasis], ['Address type', device.addressType],
+    ...(device.addressMasked ? [['Address handling', 'Real radio address hidden by the host OS'] as [string, string]] : []),
     ...(typeof device.details.advertisedVendorHint === 'string' && device.details.advertisedVendorHint ? [['Vendor hint (reported name)', `${device.details.advertisedVendorHint} (self-reported; not verified)`] as [string, string]] : []),
     ...(device.vendorCategory ? [['Vendor category', device.vendorCategory] as [string, string]] : []),
     ...(device.vendorOui ? [['OUI prefix', `${device.vendorOui} (hardware address prefix, not a model)`] as [string, string]] : []),
@@ -368,7 +369,7 @@ function DeviceDetails({ device }: { device: RFDevice }) {
       {serviceUuids.length > 0 && <div className="device-detail device-detail-wide"><span>Advertised service UUIDs</span><strong>{serviceUuids.join(', ')}</strong></div>}
       {manufacturerData.length > 0 && <div className="device-detail device-detail-wide"><span>Manufacturer data (hex)</span><strong>{manufacturerData.join(' · ')}</strong></div>}
     </div>
-    <p className="device-details-note">Vendor data is based on a globally assigned address prefix or a BLE advertiser company code. A radio name/network name is self-reported and does not establish an exact product model or a nearby person’s identity. Label evidence quality scores only how the vendor label was derived; it is not a probability that the device is nearby, nor an identity.</p>
+    <p className="device-details-note">{device.addressMasked ? 'This host operating system hid the real radio address, so no manufacturer can be attributed and the visible prefix is not a real assignment. Nearby access points are commonly reported this way, and they are not extra devices. Label evidence quality scores only how a vendor label was derived; it is not a probability that the device is nearby, nor an identity.' : 'Vendor data is based on a globally assigned address prefix or a BLE advertiser company code. A radio name/network name is self-reported and does not establish an exact product model or a nearby person’s identity. Label evidence quality scores only how the vendor label was derived; it is not a probability that the device is nearby, nor an identity.'}</p>
   </section>;
 }
 
@@ -381,6 +382,140 @@ function DeviceRows({ devices, selectedId, onSelect, onFavorite }: { devices: RF
 
 function NodeList({ nodes }: { nodes: ScanNode[] }) {
   return <div className="node-list">{nodes.map(node => <div className="node-card" key={node.id} data-testid={`card-node-${node.id}`}><div className="node-card-top"><span className="node-name">{node.name}</span><span className={`state ${node.status === 'online' ? 'active' : 'ghost'}`}>{node.status}</span></div><div className="node-address">{node.address} · {node.role}</div><div className="node-meta"><span>{node.devices} targets observed</span><span>{node.lastSeen}</span></div></div>)}</div>;
+}
+
+type ChecklistState = 'ok' | 'warn' | 'blocked';
+
+function RelayChecklist({ nodes, devices, apiStatus }: { nodes: ScanNode[]; devices: RFDevice[]; apiStatus: ApiStatus }) {
+  const online = nodes.filter(node => node.status === 'online');
+  const newestHeartbeat = newestTimestamp(nodes.map(node => node.lastSeenTimestamp));
+  const newestObservation = newestTimestamp(devices.map(device => device.lastSeenTimestamp));
+  const heartbeatAge = ageSecondsFrom(newestHeartbeat);
+  const observationAge = ageSecondsFrom(newestObservation);
+  const apiOk = apiStatus === 'connected';
+  const relayRegistered = nodes.length > 0;
+  const relayOnline = online.length > 0 && heartbeatAge !== null && heartbeatAge < 45;
+  const measurementsFlowing = observationAge !== null && observationAge < 300;
+  const allGreen = apiOk && relayOnline && measurementsFlowing;
+  const steps: Array<{ label: string; detail: string; state: ChecklistState }> = [
+    { label: 'Operator API reachable', state: apiOk ? 'ok' : apiStatus === 'checking' ? 'warn' : 'blocked', detail: apiOk ? 'The signed-in operator API answered the last request.' : apiStatus === 'checking' ? 'Checking the operator API…' : apiStatus === 'unavailable' ? 'The operator API is unavailable or not configured, so relay status cannot be confirmed.' : 'The last API request failed, so the readings below may be stale.' },
+    { label: 'Authorized relay registered', state: relayRegistered ? 'ok' : 'blocked', detail: relayRegistered ? `${nodes.length} relay${nodes.length === 1 ? '' : 's'} registered to this account.` : 'No relay is registered to this account yet. A relay registers itself on its first successful upload.' },
+    { label: 'Relay sending heartbeats', state: relayOnline ? 'ok' : relayRegistered ? 'warn' : 'blocked', detail: relayOnline ? `Newest heartbeat ${ageText(newestHeartbeat)} from ${online[0].name}.` : relayRegistered ? `Last heartbeat ${ageText(newestHeartbeat)}. Start or restart the relay on the machine that has the radio adapter.` : 'Waiting for a first heartbeat.' },
+    { label: 'Measurements arriving', state: measurementsFlowing ? 'ok' : 'warn', detail: measurementsFlowing ? `${devices.length} targets in scope · newest observation ${ageText(newestObservation)}.` : relayOnline ? 'A relay is online but nothing was stored in the last five minutes. Check that the adapter is enabled and that the relay log shows collected observations.' : 'No measured observation has been stored yet.' },
+  ];
+  const stateMark = (state: ChecklistState) => state === 'ok' ? <Check size={12} /> : state === 'warn' ? <Minus size={12} /> : <X size={12} />;
+  return <section className="panel checklist" data-testid="relay-checklist">
+    <div className="panel-header"><div><div className="panel-title">Relay connection</div><div className="panel-subtitle">Scanning runs on your own machine, not in the browser</div></div><span className={`hardware-status ${allGreen ? 'connected' : 'limited'}`}>{allGreen ? 'ALL GREEN' : 'SETUP NEEDED'}</span></div>
+    {allGreen
+      ? <div className="checklist-summary" data-testid="relay-checklist-summary"><CheckCircle2 size={14} /><span>Relay online · heartbeat {ageText(newestHeartbeat)} · newest observation {ageText(newestObservation)} · {devices.length} targets in scope.</span></div>
+      : <div className="checklist-steps" data-testid="relay-checklist-steps">{steps.map(step => <div className={`checklist-step ${step.state}`} key={step.label} data-testid={`relay-step-${step.label.toLowerCase().replaceAll(' ', '-')}`}><span className="checklist-mark">{stateMark(step.state)}</span><div><strong>{step.label}</strong><span>{step.detail}</span></div></div>)}</div>}
+    <RelayGuide />
+  </section>;
+}
+
+function RelayGuide() {
+  return <div className="checklist-guide">
+    <p>A browser cannot enumerate nearby Wi-Fi or Bluetooth radios, so BackSpyne collects through a relay you run yourself on a machine that has the adapter. Fill in <code>scanner/.env</code> once, then start it:</p>
+    <div className="checklist-commands"><code>Windows&nbsp;&nbsp;scanner\start.bat</code><code>macOS / Linux&nbsp;&nbsp;./scanner/start.sh</code></div>
+    <p>CSI sensing research additionally needs a compatible sensing engine plus CSI-capable hardware, reached through <code>BACKSPYNE_CSI_API_URL</code> and <code>BACKSPYNE_CSI_API_TOKEN</code>. Until that is connected this console stays measurement-only on purpose instead of inventing results.</p>
+  </div>;
+}
+
+function bandForChannel(channel: string): string {
+  const value = Number.parseInt(channel, 10);
+  if (!Number.isFinite(value)) return 'unclassified';
+  if (value >= 1 && value <= 14) return '2.4 GHz';
+  if (value >= 32 && value <= 177) return '5 GHz';
+  return 'unclassified';
+}
+
+function vendorBasisBucket(basis: string): string {
+  const lowered = basis.toLowerCase();
+  if (lowered.includes('masked')) return 'Address hidden by the host OS';
+  if (lowered.includes('registry')) return 'IEEE registry prefix match';
+  if (lowered.includes('oui match')) return 'Reviewed local prefix table';
+  if (lowered.includes('company code')) return 'BLE company code hint';
+  if (lowered.includes('randomized')) return 'Randomized BLE address';
+  return 'No manufacturer evidence';
+}
+
+function CountBars({ entries, emptyMessage, testId }: { entries: Array<[string, number]>; emptyMessage: string; testId: string }) {
+  const max = entries.reduce((highest, [, count]) => Math.max(highest, count), 0);
+  if (!entries.length) return <p className="assessment-empty" data-testid={testId}>{emptyMessage}</p>;
+  return <div className="bar-list" data-testid={testId}>{entries.map(([label, count]) => <div className="bar-row" key={label}><span className="bar-label">{label}</span><span className="bar-track"><b style={{ width: `${max ? Math.max(6, Math.round((count / max) * 100)) : 0}%` }} /></span><span className="bar-count">{count}</span></div>)}</div>;
+}
+
+function MeasurementAssessment({ devices }: { devices: RFDevice[] }) {
+  const wifi = devices.filter(device => device.protocol === 'WiFi');
+  const channelCounts = new Map<string, number>();
+  const bandCounts = new Map<string, number>();
+  let channelsNotReported = 0;
+  for (const device of wifi) {
+    const channel = device.channel && device.channel !== 'not reported' ? device.channel : '';
+    if (!channel) { channelsNotReported += 1; continue; }
+    channelCounts.set(channel, (channelCounts.get(channel) ?? 0) + 1);
+    const band = bandForChannel(channel);
+    bandCounts.set(band, (bandCounts.get(band) ?? 0) + 1);
+  }
+  const channels = [...channelCounts.entries()].sort((left, right) => right[1] - left[1] || Number(left[0]) - Number(right[0])).slice(0, 12).map(([channel, count]) => [`Channel ${channel}`, count] as [string, number]);
+  const bands = [...bandCounts.entries()].sort((left, right) => right[1] - left[1]);
+  const securityReported = wifi.filter(device => typeof device.details.security === 'string' && device.details.security.trim() !== '');
+  const openNetworks = securityReported.filter(device => { const value = String(device.details.security).trim().toLowerCase(); return value === '--' || value.startsWith('open'); });
+  const securedNetworks = securityReported.length - openNetworks.length;
+  const knownVendors = devices.filter(device => device.vendor !== 'Unknown vendor').length;
+  const basisCounts = new Map<string, number>();
+  for (const device of devices) {
+    const bucket = vendorBasisBucket(device.vendorBasis);
+    basisCounts.set(bucket, (basisCounts.get(bucket) ?? 0) + 1);
+  }
+  const basisEntries = [...basisCounts.entries()].sort((left, right) => right[1] - left[1]);
+  const signals = devices.flatMap(device => device.signal === null ? [] : [device.signal]).sort((left, right) => left - right);
+  const medianSignal = signals.length ? signals[Math.floor(signals.length / 2)] : null;
+  const signalBuckets: Array<[string, number]> = [
+    ['≥ -50 dBm', signals.filter(value => value >= -50).length],
+    ['-50 to -60 dBm', signals.filter(value => value < -50 && value >= -60).length],
+    ['-60 to -70 dBm', signals.filter(value => value < -60 && value >= -70).length],
+    ['-70 to -80 dBm', signals.filter(value => value < -70 && value >= -80).length],
+    ['< -80 dBm', signals.filter(value => value < -80).length],
+  ];
+  const masked = devices.filter(device => device.addressMasked).length;
+  const fresh = devices.filter(device => device.status === 'active').length;
+  const idle = devices.filter(device => device.status === 'idle').length;
+  const ghost = devices.filter(device => device.status === 'ghost').length;
+  const maskedShare = devices.length ? Math.round((masked / devices.length) * 100) : 0;
+  return <div className="assessment-grid">
+    <section className="panel assessment-card" data-testid="assessment-channel-plan">
+      <div className="panel-header"><div><div className="panel-title">Channel plan</div><div className="panel-subtitle">{channelCounts.size} distinct channels · {channelsNotReported} without a channel</div></div><Radio size={15} style={{ color: '#6a8c8b' }} /></div>
+      <CountBars entries={bands} emptyMessage="No access point reported a channel yet." testId="assessment-band-split" />
+      <CountBars entries={channels} emptyMessage="No busy channels to rank yet." testId="assessment-busiest-channels" />
+      <p className="assessment-note">Band split is inferred from the channel number alone: 1–14 → 2.4 GHz, 32–177 → 5 GHz, anything else unclassified. Wi-Fi 6E channels reuse the same numbering, so 6 GHz cannot be separated from 2.4 GHz here.</p>
+    </section>
+    <section className="panel assessment-card" data-testid="assessment-security">
+      <div className="panel-header"><div><div className="panel-title">Security posture</div><div className="panel-subtitle">{securityReported.length} of {wifi.length} access points reported a security mode</div></div><Shield size={15} style={{ color: '#6a8c8b' }} /></div>
+      {securityReported.length
+        ? <CountBars entries={[['Encrypted (any mode)', securedNetworks], ['Open / no encryption', openNetworks.length]]} emptyMessage="No reported security modes." testId="assessment-security-split" />
+        : <p className="assessment-empty" data-testid="assessment-security-split">This host adapter did not report a security mode for any network, so open and encrypted networks cannot be assessed from these observations.</p>}
+      {openNetworks.length > 0 && <p className="assessment-note warn">{openNetworks.length} access point{openNetworks.length === 1 ? '' : 's'} advertise no encryption. That is a finding about the access point, not about who is connected to it.</p>}
+      {securityReported.length > 0 && <p className="assessment-note">Encryption mode is self-declared in the beacon; a strong mode is not evidence that a network is well configured or authorized.</p>}
+    </section>
+    <section className="panel assessment-card" data-testid="assessment-vendors">
+      <div className="panel-header"><div><div className="panel-title">Vendor inventory</div><div className="panel-subtitle">{knownVendors} of {devices.length} targets carry a vendor label</div></div><Cpu size={15} style={{ color: '#6a8c8b' }} /></div>
+      <CountBars entries={basisEntries} emptyMessage="No observations to label yet." testId="assessment-vendor-basis" />
+      {masked > 0 && <p className="assessment-note">A host-masked address carries no manufacturer information at all, which is why {masked === devices.length ? 'every' : 'many'} nearby access point{masked === 1 ? '' : 's'} can only show “Unknown vendor”.</p>}
+    </section>
+    <section className="panel assessment-card" data-testid="assessment-signals">
+      <div className="panel-header"><div><div className="panel-title">Signal distribution</div><div className="panel-subtitle">{signals.length} of {devices.length} targets reported dBm</div></div><Signal size={15} style={{ color: '#6a8c8b' }} /></div>
+      <div className="assessment-stats"><div><div className="eyebrow">Strongest</div><strong>{signals.length ? `${Math.round(signals[signals.length - 1])} dBm` : '—'}</strong></div><div><div className="eyebrow">Median</div><strong>{medianSignal === null ? '—' : `${Math.round(medianSignal)} dBm`}</strong></div><div><div className="eyebrow">Weakest</div><strong>{signals.length ? `${Math.round(signals[0])} dBm` : '—'}</strong></div></div>
+      <CountBars entries={signalBuckets} emptyMessage="No numeric signal readings yet." testId="assessment-signal-buckets" />
+      {signals.length < devices.length && <p className="assessment-note">Some host adapters report link quality as a percentage instead of dBm; those targets are excluded from this distribution rather than converted.</p>}
+    </section>
+    <section className="panel assessment-card" data-testid="assessment-quality">
+      <div className="panel-header"><div><div className="panel-title">Observation quality</div><div className="panel-subtitle">{devices.length} targets in the current scope</div></div><Gauge size={15} style={{ color: '#6a8c8b' }} /></div>
+      <div className="assessment-stats"><div><div className="eyebrow">Fresh</div><strong>{fresh}</strong></div><div><div className="eyebrow">Idle</div><strong>{idle}</strong></div><div><div className="eyebrow">Ghost</div><strong>{ghost}</strong></div></div>
+      <CountBars entries={[['Address masked by the host OS', masked], ['Address usable for vendor lookup', devices.length - masked]]} emptyMessage="No observations yet." testId="assessment-address-quality" />
+      <p className="assessment-note">Fresh means seen in the last minute, idle within five minutes, ghost older than that. {maskedShare}% of this scope has an address the operating system hid, so those rows can never carry a vendor.</p>
+    </section>
+  </div>;
 }
 
 function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite, onNavigate, liveMode, apiConnected, apiStatus, trail }: { devices: RFDevice[]; nodes: ScanNode[]; selectedId: string; scanning: boolean; onSelect: (id: string) => void; onFavorite: (id: string) => void; onNavigate: (view: NavView) => void; liveMode: boolean; apiConnected: boolean; apiStatus: ApiStatus; trail: DeviceSighting[] }) {
@@ -405,6 +540,7 @@ function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite,
   const historyEmptyMessage = trail.length ? 'Not enough reported signal samples to show a trend' : undefined;
   return <><div className="page-heading"><div><div className="page-kicker">RF command surface / 01</div><h1>Know what is nearby.</h1><p>Measured WiFi access points and BLE advertisements from your authorized local relay. Nearby client devices are not fully discoverable through standard OS scans.</p></div><div className="header-actions"><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
      <div className="signal-banner"><Shield /><span><strong>Authorized environment only.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : apiStatus === 'error' ? 'The API returned an error reading scan data; the relay status cannot be confirmed. The database connection must be repaired before scans can be stored.' : apiStatus === 'unavailable' ? 'The operator API is unavailable, so relay status cannot be checked.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'Checking operator API and authorized relay status.'} This dashboard lists WiFi APs/BLE advertisers only, not all nearby phones or people.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
+     <RelayChecklist nodes={nodes} devices={devices} apiStatus={apiStatus} />
      <div className="stats-grid"><MetricCard label="Nearby targets" value={String(visibleDevices.length).padStart(2, '0')} note="Current authorized scope" icon={Radio} accent /><MetricCard label="Tracked now" value={String(devices.filter(d => d.status === 'active').length).padStart(2, '0')} note={`${activeNodes} active node${activeNodes === 1 ? '' : 's'}`} icon={Eye} /><MetricCard label="Signal floor" value={signalFloor} note="Lowest observed dBm" icon={Signal} /><MetricCard label="Scan sources" value={scanSources} note="Protocols observed" icon={Shield} /></div>
     <div className="main-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Detected targets</div><div className="panel-subtitle">Schematic layout · direction and distance not measured</div></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'LIVE SWEEP' : 'SWEEP PAUSED'}</div></div><RadarView devices={devices} selectedId={selectedId} onSelect={onSelect} /></section>
        <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} emptyMessage={historyEmptyMessage} />{signalSamples.length > 0 && <div className="history-trend" data-testid="signal-history-trend"><div><div className="eyebrow">Samples</div><strong>{signalSamples.length}</strong></div><div><div className="eyebrow">Latest</div><strong>{latestSampleText}</strong></div><div><div className="eyebrow">Oldest</div><strong>{oldestSampleText}</strong></div><div><div className="eyebrow">Span</div><strong>{sampleSpanMinutes === null ? 'unknown' : `${sampleSpanMinutes} min`}</strong></div><div><div className="eyebrow">Reported strength</div><strong>{strengthTrend === null ? 'single sample' : strengthTrend}{strengthTrend === 'stronger' ? <TrendingUp size={13} /> : strengthTrend === 'weaker' ? <TrendingDown size={13} /> : null}</strong></div></div>}{signalSamples.length > 1 && <p className="history-note">Reported-strength trend compares the newest and oldest dBm readings in this sample set. It is a direction indicator only; RSSI is not a distance, position, occupancy, or person measurement.</p>}<div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected?.signal !== null && selected ? 'dBm' : 'NO MEASUREMENT'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
@@ -469,7 +605,7 @@ function sensingMetricsFromSnapshot(snapshot: SensingSnapshot | null): SensingMe
   return rows;
 }
 
-function Sensing({ scanning, snapshot, apiConnected }: { scanning: boolean; snapshot: SensingSnapshot | null; apiConnected: boolean }) {
+function Sensing({ scanning, snapshot, apiConnected, devices, nodes, apiStatus }: { scanning: boolean; snapshot: SensingSnapshot | null; apiConnected: boolean; devices: RFDevice[]; nodes: ScanNode[]; apiStatus: ApiStatus }) {
   const metrics = sensingMetricsFromSnapshot(snapshot);
   const snapshotMetrics = snapshot?.metrics ?? {};
   const csiActive = snapshotMetrics.sensingMode === 'research';
@@ -489,6 +625,9 @@ function Sensing({ scanning, snapshot, apiConnected }: { scanning: boolean; snap
   const poseKeypoints = Array.isArray(snapshotMetrics.poseKeypoints) ? snapshotMetrics.poseKeypoints : [];
   return <><div className="page-heading"><div><div className="page-kicker">WiFi sensing / 03</div><h1>Read the radio data.</h1><p>CSI-enabled research mode is available through a compatible, authenticated local sensing engine. Standard WiFi access-point/BLE scans remain descriptive measurements only.</p></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'RELAY REPORTING' : 'AWAITING MEASUREMENTS'}</div></div>
     <div className={`signal-banner ${csiActive ? 'research-banner' : ''}`}><CameraOff /><span><strong>{csiActive ? 'Experimental research output.' : 'Measurement-only mode.'}</strong> {csiActive ? 'CSI measurements and model outputs below are sourced from the authenticated live engine and are research-only. No safety, clinical, identity, or emergency interpretation.' : apiConnected ? (snapshot ? 'The latest signed local-node sample has WiFi/BLE measurements; configure compatible CSI hardware to enable WiFi sensing research.' : 'The API is connected, but no sensing sample has arrived yet.') : 'Connect to the operator API to load sensing telemetry.'} No images or audio are used.</span><CircleHelp size={14} style={{ marginLeft: 'auto' }} /></div>
+    <RelayChecklist nodes={nodes} devices={devices} apiStatus={apiStatus} />
+    <div className="assessment-heading"><div className="eyebrow">Measured radio assessment</div><p>Built only from the observations the relay has actually reported. Nothing here is inferred about people.</p></div>
+    <MeasurementAssessment devices={devices} />
     <div className="sensing-grid">{metrics.map(metric => <div className="panel sensing-card" key={metric.label} data-testid={`sensing-${metric.label.toLowerCase().replaceAll(' ', '-')}`}><div className="metric-icon"><Gauge size={17} /></div><div className="eyebrow">{metric.label}</div><div className="sensing-value">{metric.value}<span className="sensing-unit">{metric.unit}</span></div><div className="confidence"><span>{metric.status} · {metric.trend}</span></div></div>)}</div>
     {csiActive && <div className="panel research-panel"><div className="panel-header"><div><div className="panel-title">Engine measurements</div><div className="panel-subtitle">Measured features from live CSI frames · not person-level evidence</div></div><span className="hardware-status limited">RESEARCH</span></div><div className="notes-grid">{researchFeatures.map(([label, key, unit]) => <div className="note-cell" key={key}><div className="eyebrow">{label}</div><strong className="research-feature-value">{typeof csiFeatures[key] === 'number' && Number.isFinite(csiFeatures[key]) ? (csiFeatures[key] as number).toFixed(3) : '—'} <small>{unit}</small></strong></div>)}</div></div>}
     {calibratedEvidence && <div className="panel research-panel"><div className="panel-header"><div><div className="panel-title">Calibration provenance</div><div className="panel-subtitle">The engine attached a calibration-bound research result</div></div><CheckCircle2 size={16} style={{ color: '#79d8cf' }} /></div><div className="device-details-grid"><div className="device-detail"><span>Evidence schema</span><strong>{String(calibratedEvidence.schema ?? 'unknown')}</strong></div><div className="device-detail"><span>Model ID</span><strong>{String(calibratedEvidence.model_id ?? 'unknown')}</strong></div><div className="device-detail"><span>Inference method</span><strong>{String(calibratedEvidence.inference_method ?? 'unknown')}</strong></div><div className="device-detail"><span>Bound node IDs</span><strong>{Array.isArray(calibratedEvidence.source_node_ids) ? calibratedEvidence.source_node_ids.join(', ') : 'unknown'}</strong></div></div></div>}
@@ -497,10 +636,142 @@ function Sensing({ scanning, snapshot, apiConnected }: { scanning: boolean; snap
   </>;
 }
 
+type RelayTokenSummary = { id: string; label: string; createdAt: string; lastUsedAt: string | null; revokedAt: string | null; active: boolean };
+type RelayListPayload = { relays: RelayTokenSummary[]; allowance: { maxRelays: number; active: number; remaining: number } };
+type IssuedRelay = { token: string; label: string; nodeId: string };
+
+function relayUsage(value: string | null) {
+  if (!value) return 'never used';
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? `last used ${timeAgo(value)}` : 'usage unknown';
+}
+
+function relaySlug(label: string) {
+  const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
+  return slug || 'relay';
+}
+
+/** Pairing a relay is per operator account: the token is shown once and stored as a digest. */
+function RelayPairing() {
+  const { user } = useUser();
+  const [payload, setPayload] = useState<RelayListPayload | null>(null);
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [issued, setIssued] = useState<IssuedRelay | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+
+  const load = async () => {
+    try {
+      const response = await fetch('/api/relays', { credentials: 'include' });
+      if (response.status === 401 || response.status === 503) {
+        setUnavailable(true);
+        setPayload(null);
+        return;
+      }
+      if (!response.ok) {
+        setError(`The relay list could not be read (${response.status}).`);
+        return;
+      }
+      setUnavailable(false);
+      setError('');
+      setPayload(await response.json() as RelayListPayload);
+    } catch {
+      setError('The relay list could not be read; check your connection.');
+    }
+  };
+  useEffect(() => { void load(); }, []);
+
+  const readError = async (response: Response, fallback: string) => {
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    return typeof body?.error === 'string' && body.error ? body.error : fallback;
+  };
+
+  const create = async () => {
+    const trimmed = label.trim();
+    if (!trimmed) { setError('Give the relay a label so you can recognise it later.'); return; }
+    setBusy(true); setError(''); setCopied(false);
+    try {
+      const response = await fetch('/api/relays', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: trimmed }) });
+      const body = await response.json().catch(() => null) as { token?: unknown; relay?: RelayTokenSummary } | null;
+      if (response.ok && typeof body?.token === 'string' && body.token) {
+        setIssued({ token: body.token, label: trimmed, nodeId: `relay-${relaySlug(trimmed)}-${body.relay?.id.slice(-6) ?? '01'}` });
+        setLabel('');
+        await load();
+        return;
+      }
+      setError(await readError(response, response.status === 403 ? 'Your current plan has no relay allowance left.' : `The pairing token could not be created (${response.status}).`));
+    } catch {
+      setError('The pairing token could not be created; check your connection.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (relay: RelayTokenSummary) => {
+    if (!window.confirm(`Revoke "${relay.label}"? A relay using this token stops reporting immediately.`)) return;
+    setBusy(true); setError('');
+    try {
+      const response = await fetch(`/api/relays/${encodeURIComponent(relay.id)}/revoke`, { method: 'POST', credentials: 'include' });
+      if (!response.ok) { setError(await readError(response, `The relay could not be revoked (${response.status}).`)); return; }
+      await load();
+    } catch {
+      setError('The relay could not be revoked; check your connection.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const snippet = issued ? [
+    '# scanner/.env',
+    `BACKSPYNE_API_URL=${window.location.origin}/api`,
+    `BACKSPYNE_NODE_TOKEN=${issued.token}`,
+    `BACKSPYNE_NODE_ID=${issued.nodeId}`,
+    `BACKSPYNE_OWNER_ID=${user?.id ?? '<your operator user id>'}`,
+    'BACKSPYNE_MODE=live',
+  ].join('\n') : '';
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+    } catch {
+      setError('The clipboard is unavailable in this browser; select the text and copy it manually.');
+    }
+  };
+
+  const active = payload?.relays.filter(relay => relay.active).length ?? 0;
+  const allowance = payload?.allowance;
+
+  return <section className="panel relay-pairing" data-testid="relay-pairing">
+    <div className="panel-header"><div><div className="panel-title">Relay pairing</div><div className="panel-subtitle">{allowance ? `${active} of ${allowance.maxRelays} paired relay${allowance.maxRelays === 1 ? '' : 's'} in use` : 'Per-account relay credentials'}</div></div><ShieldCheck size={16} style={{ color: '#6a8c8b' }} /></div>
+    {unavailable && <div className="billing-notice" role="status" data-testid="relay-pairing-unavailable">The operator API is unavailable, so paired relays cannot be listed or created right now.</div>}
+    {error && <div className="billing-notice error" role="status" data-testid="relay-pairing-error">{error}</div>}
+    <p className="relay-pairing-note">Each operator pairs their own relay. The token below is shown once and stored only as a digest, so a lost token is replaced by revoking the relay and pairing again.</p>
+    {!unavailable && <div className="relay-create">
+      <div className="field"><label htmlFor="relay-label">Relay label</label><input id="relay-label" data-testid="input-relay-label" value={label} onChange={event => setLabel(event.target.value)} placeholder="Office AP sweep" maxLength={120} /></div>
+      <button className="btn btn-primary" data-testid="button-create-relay" disabled={busy || (allowance ? allowance.remaining <= 0 : false)} onClick={() => void create()}>{busy ? <><RefreshCw className="spin" size={13} /> Working</> : <><Plus size={13} /> Pair a relay</>}</button>
+    </div>}
+    {allowance && allowance.remaining <= 0 && <p className="relay-pairing-note" data-testid="relay-allowance-full">This plan allows {allowance.maxRelays} paired relay{allowance.maxRelays === 1 ? '' : 's'}. Revoke one or upgrade the plan to pair another.</p>}
+    {issued && <div className="relay-token" data-testid="relay-token-issued">
+      <strong>Copy this now — it is not stored and cannot be shown again.</strong>
+      <pre>{snippet}</pre>
+      <div className="relay-token-actions"><button className="btn" data-testid="button-copy-relay-token" onClick={() => void copy()}>{copied ? <><Check size={13} /> Copied</> : 'Copy .env lines'}</button><button className="btn" onClick={() => setIssued(null)}>Hide</button></div>
+      <p className="relay-pairing-note">Paste these into <code>scanner/.env</code> on the machine that will scan, then start the relay with <code>scanner\start.bat</code> (Windows) or <code>./scanner/start.sh</code> (macOS/Linux). Keep it running; this page updates as soon as a signed heartbeat arrives.</p>
+    </div>}
+    {payload && payload.relays.length > 0 ? <div className="relay-list">{payload.relays.map(relay => <div className="relay-row" key={relay.id} data-testid={`relay-row-${relay.id}`}>
+      <div><div className="relay-row-label">{relay.label}</div><div className="relay-row-meta">paired {timeAgo(relay.createdAt)} · {relayUsage(relay.lastUsedAt)}</div></div>
+      <span className={`hardware-status ${relay.active ? 'connected' : 'limited'}`}>{relay.active ? 'active' : 'revoked'}</span>
+      {relay.active && <button className="btn" disabled={busy} data-testid={`button-revoke-relay-${relay.id}`} onClick={() => void revoke(relay)}><Trash2 size={13} /> Revoke</button>}
+    </div>)}</div> : payload ? <div className="empty-state"><Shield size={23} /><h3>No paired relays</h3><p>Pair a relay to send signed measurements from a machine you control.</p></div> : null}
+  </section>;
+}
+
 function Nodes({ nodes, onAdd, onRemove }: { nodes: ScanNode[]; onAdd: (name: string, address: string) => Promise<boolean>; onRemove: (id: string) => void }) {
   const [name, setName] = useState(''); const [address, setAddress] = useState(''); const [adding, setAdding] = useState(false);
   const submit = async () => { if (name.trim() && address.trim() && await onAdd(name.trim(), address.trim())) { setName(''); setAddress(''); setAdding(false); } };
-  return <><div className="page-heading"><div><div className="page-kicker">Network topology / 04</div><h1>Know your vantage points.</h1><p>Local relay nodes keep collection scoped, inspectable, and close to the operator.</p></div><button className="btn btn-primary" data-testid="button-add-node" onClick={() => setAdding(!adding)}>{adding ? <X size={14} /> : <Plus size={14} />}{adding ? 'Cancel' : 'Add node'}</button></div><div className="nodes-layout"><section className="panel"><div className="panel-header"><div><div className="panel-title">Registered nodes</div><div className="panel-subtitle">{nodes.filter(n => n.status === 'online').length} online · {nodes.length} total</div></div><Network size={16} style={{ color: '#6a8c8b' }} /></div><div className="node-grid">{nodes.length ? nodes.map(node => <div className="node-card" key={node.id} data-testid={`node-detail-${node.id}`}><div className="node-card-top"><span className="node-name">{node.name}</span><button className="icon-button" aria-label={`Remove ${node.name}`} data-testid={`button-remove-node-${node.id}`} onClick={() => onRemove(node.id)}><Trash2 size={13} /></button></div><div className="node-address">{node.address} · {node.role}</div><div className="node-meta"><span className={node.status === 'online' ? 'node-status' : 'node-status offline'}>{node.status === 'online' ? 'heartbeat nominal' : 'last heartbeat'}</span><span>{node.lastSeen}</span></div><div style={{ marginTop: 13, color: '#abc1bd', font: '10px var(--app-font-mono)' }}>{node.devices} <span style={{ color: '#667f80' }}>observations in scope</span></div></div>) : <div className="empty-state"><Network size={23} /><h3>No relay nodes registered</h3><p>Add an authorized local relay or start the scanner bridge.</p></div>}</div></section><section className="panel node-add"><div className="panel-title">Add a local relay</div><p>Register an authorized sensor adapter by its local address. Registration is stored for this operator account.</p>{adding ? <div className="form-grid"><div className="field full"><label htmlFor="node-name">Node label</label><input id="node-name" data-testid="input-node-name" value={name} onChange={e => setName(e.target.value)} placeholder="West hallway" /></div><div className="field full"><label htmlFor="node-address">Local address</label><input id="node-address" data-testid="input-node-address" value={address} onChange={e => setAddress(e.target.value)} placeholder="10.42.0.14" /></div><div className="form-actions field full"><button className="btn" data-testid="button-cancel-node" onClick={() => setAdding(false)}>Cancel</button><button className="btn btn-primary" data-testid="button-save-node" onClick={() => void submit()}><Check size={14} /> Register node</button></div></div> : <div className="node-hero"><div className="node-hero-title"><Antenna size={15} /> Adapter contract ready</div><p>Use the scanner bridge to send signed heartbeats and observations to this registered operator.</p></div>}</section></div></>;
+  return <><div className="page-heading"><div><div className="page-kicker">Network topology / 04</div><h1>Know your vantage points.</h1><p>Local relay nodes keep collection scoped, inspectable, and close to the operator.</p></div><button className="btn btn-primary" data-testid="button-add-node" onClick={() => setAdding(!adding)}>{adding ? <X size={14} /> : <Plus size={14} />}{adding ? 'Cancel' : 'Add node'}</button></div><div className="nodes-layout"><section className="panel"><div className="panel-header"><div><div className="panel-title">Registered nodes</div><div className="panel-subtitle">{nodes.filter(n => n.status === 'online').length} online · {nodes.length} total</div></div><Network size={16} style={{ color: '#6a8c8b' }} /></div><div className="node-grid">{nodes.length ? nodes.map(node => <div className="node-card" key={node.id} data-testid={`node-detail-${node.id}`}><div className="node-card-top"><span className="node-name">{node.name}</span><button className="icon-button" aria-label={`Remove ${node.name}`} data-testid={`button-remove-node-${node.id}`} onClick={() => onRemove(node.id)}><Trash2 size={13} /></button></div><div className="node-address">{node.address} · {node.role}</div><div className="node-meta"><span className={node.status === 'online' ? 'node-status' : 'node-status offline'}>{node.status === 'online' ? 'heartbeat nominal' : 'last heartbeat'}</span><span>{node.lastSeen}</span></div><div style={{ marginTop: 13, color: '#abc1bd', font: '10px var(--app-font-mono)' }}>{node.devices} <span style={{ color: '#667f80' }}>observations in scope</span></div></div>) : <div className="empty-state"><Network size={23} /><h3>No relay nodes registered</h3><p>Add an authorized local relay or start the scanner bridge.</p></div>}</div></section><section className="panel node-add"><div className="panel-title">Add a local relay</div><p>Register an authorized sensor adapter by its local address. Registration is stored for this operator account.</p>{adding ? <div className="form-grid"><div className="field full"><label htmlFor="node-name">Node label</label><input id="node-name" data-testid="input-node-name" value={name} onChange={e => setName(e.target.value)} placeholder="West hallway" /></div><div className="field full"><label htmlFor="node-address">Local address</label><input id="node-address" data-testid="input-node-address" value={address} onChange={e => setAddress(e.target.value)} placeholder="10.42.0.14" /></div><div className="form-actions field full"><button className="btn" data-testid="button-cancel-node" onClick={() => setAdding(false)}>Cancel</button><button className="btn btn-primary" data-testid="button-save-node" onClick={() => void submit()}><Check size={14} /> Register node</button></div></div> : <div className="node-hero"><div className="node-hero-title"><Antenna size={15} /> Adapter contract ready</div><p>Use the scanner bridge to send signed heartbeats and observations to this registered operator.</p></div>}</section></div><RelayPairing /></>;
 }
 
 function CapabilityIcon({ id }: { id: string }) {
@@ -546,6 +817,28 @@ function entitlementRows(entitlements: BillingEntitlements): string[] {
     entitlements.reportExport ? 'CSV ledger export' : 'CSV ledger export not included',
     entitlements.csiResearch ? 'Experimental CSI research panels' : 'Experimental CSI research not included',
   ];
+}
+
+function ageSecondsFrom(timestamp: number | null): number | null {
+  if (timestamp === null || !Number.isFinite(timestamp)) return null;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+}
+
+function ageText(timestamp: number | null): string {
+  const seconds = ageSecondsFrom(timestamp);
+  if (seconds === null) return 'unknown';
+  if (seconds < 10) return 'just now';
+  if (seconds < 60) return `${seconds} sec ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function newestTimestamp(values: Array<number | null>): number | null {
+  return values.reduce<number | null>((newest, value) => value !== null && (newest === null || value > newest) ? value : newest, null);
 }
 
 function evidenceTier(score: number) {
@@ -691,10 +984,12 @@ function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
   const observedVendor = liveText(raw.vendor, 'Unknown vendor');
   const advertisedManufacturer = liveText(payload.advertisedManufacturer, '');
   const vendor = observedVendor !== 'Unknown vendor' ? observedVendor : advertisedManufacturer || observedVendor;
-  const derivedVendorBasis = observedVendor !== 'Unknown vendor' ? 'Hardware address prefix (local OUI match)' : advertisedManufacturer ? 'BLE manufacturer-specific data (company code)' : addressType === 'private/randomized address' ? 'Unavailable: address is randomized' : 'No manufacturer evidence reported';
+  const addressMasked = payload.addressMasked === true;
+  const derivedVendorBasis = observedVendor !== 'Unknown vendor' ? 'Hardware address prefix (local OUI match)' : advertisedManufacturer ? 'BLE manufacturer-specific data (company code)' : addressMasked ? 'Unavailable: host operating system masked the radio address' : addressType === 'private/randomized address' ? 'Unavailable: address is randomized' : 'No manufacturer evidence reported';
   const vendorBasis = liveText(payload.vendorBasis, derivedVendorBasis);
   const vendorCategory = liveText(payload.vendorCategory, '');
-  const vendorOui = typeof payload.vendorOui === 'string' && /^[0-9A-Fa-f]{6}$/.test(payload.vendorOui) ? payload.vendorOui.toUpperCase() : null;
+  // Registry prefixes are 6 (MA-L), 7 (MA-M) or 9 (MA-S) hex characters.
+  const vendorOui = typeof payload.vendorOui === 'string' && /^(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{7}|[0-9A-Fa-f]{9})$/.test(payload.vendorOui) ? payload.vendorOui.toUpperCase() : null;
   const evidenceQuality = typeof payload.evidenceQuality === 'number' && Number.isFinite(payload.evidenceQuality) && payload.evidenceQuality >= 0 && payload.evidenceQuality <= 100 ? Math.round(payload.evidenceQuality) : null;
   const deviceType = protocol === 'WiFi' ? 'Wi-Fi access point' : protocol === 'BLE' ? 'Bluetooth LE advertiser' : 'Radio observation';
   const seenAt = liveText(raw.lastSeenAt, '');
@@ -709,6 +1004,7 @@ function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
     vendorCategory: vendorCategory || null,
     vendorOui,
     evidenceQuality,
+    addressMasked,
     deviceType,
     addressType,
     protocol,
@@ -735,6 +1031,7 @@ function liveNodeFromApi(raw: ApiNode): ScanNode {
     address: liveText(raw.address, 'local'),
     status: raw.status === 'online' ? 'online' : 'offline',
     lastSeen: timeAgo(heartbeat),
+    lastSeenTimestamp: typeof raw.lastHeartbeatAt === 'string' && Number.isFinite(new Date(raw.lastHeartbeatAt).getTime()) ? new Date(raw.lastHeartbeatAt).getTime() : null,
     devices: typeof raw.deviceCount === 'number' ? raw.deviceCount : 0,
     role: liveText(raw.role, 'Sensor relay'),
   };
@@ -941,7 +1238,7 @@ function Home() {
    const onSignOut = async () => {
      if (sessionId) await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', credentials: 'include' }).catch(() => undefined);
      await signOut({ redirectUrl: basePath || '/' });
-   };    return <div className={`app-shell ${isMobile ? 'mobile-device' : 'desktop-device'}`}><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected, apiStatus }} /><div className="main-content"><Topbar view={view} scanning={scanning} apiStatus={apiStatus} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, apiStatus, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} isMobile={isMobile} apiStatus={apiStatus} />}{view === 'billing' && <Billing />}</main></div></div>;
+   };    return <div className={`app-shell ${isMobile ? 'mobile-device' : 'desktop-device'}`}><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected, apiStatus }} /><div className="main-content"><Topbar view={view} scanning={scanning} apiStatus={apiStatus} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, apiStatus, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} devices={devices} nodes={nodes} apiStatus={apiStatus} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} isMobile={isMobile} apiStatus={apiStatus} />}{view === 'billing' && <Billing />}</main></div></div>;
 }
 
 function Landing() {

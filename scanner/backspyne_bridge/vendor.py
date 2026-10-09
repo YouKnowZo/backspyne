@@ -1,10 +1,17 @@
-"""Curated, offline vendor identification for observed radio addresses.
+"""Offline vendor identification for observed radio addresses.
 
-Both datasets are small, hand-reviewed local subsets of the IEEE OUI registry
-and the Bluetooth SIG company identifier list. They are deliberately
-non-exhaustive: an address that is not present here is reported as
-"Unknown vendor" instead of being guessed, and no address is ever sent to a
-third-party lookup service.
+Two local datasets are used, and nothing is ever sent to a third-party service:
+
+* ``oui_registry.csv.gz`` - the complete public IEEE MAC address registry
+  (MA-L 24-bit, MA-M 28-bit and MA-S 36-bit assignments), fetched by
+  ``scanner/tools/fetch_oui.py``. It is the authoritative source and is read
+  lazily, once per process.
+* the hand-curated tables below - a small reviewed subset that carries friendlier
+  names and operator-facing categories, and that keeps working when the registry
+  file is missing.
+
+An address that neither source knows is reported as "Unknown vendor" instead of
+being guessed.
 
 Evidence quality describes the confidence in the *label only*. It says nothing
 about the identity of a person, the exact product model, or the distance
@@ -13,19 +20,47 @@ between the observer and the radio.
 
 from __future__ import annotations
 
+import csv
+import gzip
+from pathlib import Path
+
+BASIS_REGISTRY = "hardware address prefix (IEEE registry match)"
 BASIS_OUI = "hardware address prefix (local OUI match)"
 BASIS_BLE = "BLE manufacturer company code"
 BASIS_RANDOMIZED = "unavailable: address is randomized"
+BASIS_MASKED = "unavailable: address masked or locally administered by the host operating system"
 BASIS_NONE = "no manufacturer evidence reported"
 
 UNKNOWN_VENDOR = "Unknown vendor"
 UNCLASSIFIED = "Unclassified"
 
 # Descriptive confidence tiers for a vendor label (0-100).
+QUALITY_REGISTRY = 80
 QUALITY_OUI = 85
 QUALITY_BLE = 60
 QUALITY_RANDOMIZED = 10
+QUALITY_MASKED = 0
 QUALITY_NONE = 5
+
+# Locally generated from the public IEEE registries; see scanner/tools/fetch_oui.py.
+_REGISTRY_PATH = Path(__file__).with_name("oui_registry.csv.gz")
+# Longest prefix first: a 36-bit assignment is more specific than a 24-bit one.
+_REGISTRY_LENGTHS = (9, 7, 6)
+_HEX_DIGITS = frozenset("0123456789ABCDEF")
+
+# Registry organization names that are not usable as a vendor label. The registry
+# lists some assignments (for example ACDE48) under the organization name
+# "Private", and uses the registration-authority name for administrative blocks.
+# For these the curated table is tried next, then unknown.
+UNHELPFUL_REGISTRY_ORGANIZATIONS = frozenset({
+    "Private",
+    "IEEE Registration Authority",
+    "IEEE",
+})
+
+# Process-level cache. Left as None at import time so importing this module never
+# touches the filesystem.
+_REGISTRY_TABLE: dict[str, str] | None = None
 
 # Reviewed local lookup only. Addresses are never sent to a third-party service.
 # Keys are the first three octets of a globally administered address (6 hex
@@ -477,10 +512,67 @@ _CATEGORY_HINTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _prefix(address: str | None) -> str:
+def _read_registry(path: Path) -> dict[str, str]:
+    """Parse a gzipped ``prefix,organization`` table. Any read problem yields an
+    empty table so the curated fallback keeps working instead of raising."""
+    table: dict[str, str] = {}
+    try:
+        with gzip.open(path, "rt", newline="", encoding="utf-8", errors="replace") as handle:
+            for row in csv.reader(handle):
+                if len(row) != 2:
+                    continue
+                prefix = row[0].strip().upper()
+                organization = " ".join(row[1].split())
+                if len(prefix) not in _REGISTRY_LENGTHS or not organization:
+                    continue
+                if any(character not in _HEX_DIGITS for character in prefix):
+                    continue
+                table[prefix] = organization
+    except (OSError, EOFError, csv.Error, UnicodeError):
+        return {}
+    return table
+
+
+def registry_table() -> dict[str, str]:
+    """The process-cached IEEE registry, loaded on first use rather than at import."""
+    global _REGISTRY_TABLE
+    if _REGISTRY_TABLE is None:
+        _REGISTRY_TABLE = _read_registry(_REGISTRY_PATH)
+    return _REGISTRY_TABLE
+
+
+def registry_match(prefix: str | None) -> tuple[str, str] | None:
+    """Longest-prefix registry lookup.
+
+    Returns ``(matched_prefix, organization)`` or ``None``. The matched prefix is 9,
+    7 or 6 hex characters, so a caller can report exactly how specific the match was.
+    """
+    if not prefix:
+        return None
+    digits = "".join(character for character in prefix.upper() if character in _HEX_DIGITS)
+    table = registry_table()
+    for length in _REGISTRY_LENGTHS:
+        candidate = digits[:length]
+        if len(candidate) == length and candidate in table:
+            return candidate, table[candidate]
+    return None
+
+
+def registry_vendor(prefix: str | None) -> str | None:
+    """Organization name the IEEE registry holds for an address prefix, if any."""
+    match = registry_match(prefix)
+    return match[1] if match else None
+
+
+def _address_digits(address: str | None) -> str:
+    """All hexadecimal characters of an address, in order, without separators."""
     if not address:
         return ""
-    return "".join(character for character in address.upper() if character.isalnum())[:6]
+    return "".join(character for character in address.upper() if character in _HEX_DIGITS)
+
+
+def _prefix(address: str | None) -> str:
+    return _address_digits(address)[:6]
 
 
 def address_kind(address: str | None) -> str:
@@ -499,9 +591,16 @@ def address_kind(address: str | None) -> str:
 
 
 def vendor_for(address: str | None) -> str:
-    if not address or address_kind(address) != "globally administered address":
+    """Resolved vendor name for an address, or "Unknown vendor".
+
+    Delegates to :func:`vendor_profile` so the observation-level ``vendor`` field and
+    the reported label basis can never disagree.
+    """
+    if not address:
         return UNKNOWN_VENDOR
-    return OUI_PREFIXES.get(_prefix(address), UNKNOWN_VENDOR)
+    if address_kind(address) != "globally administered address":
+        return UNKNOWN_VENDOR
+    return str(vendor_profile(address)["vendor"])
 
 
 def ble_manufacturer_for(manufacturer_data: dict[int, bytes] | None) -> str | None:
@@ -546,22 +645,39 @@ def vendor_hint_from_name(name: str | None) -> str | None:
 def vendor_profile(
     address: str | None,
     manufacturer_data: dict[int, bytes] | None = None,
+    observation_kind: str = "unknown",
 ) -> dict[str, object]:
     """Describe the vendor evidence available for one observed radio.
 
-    A globally administered address with a reviewed prefix is the strongest
-    evidence available locally. A declared BLE company code is a weaker hint,
-    and a randomized address cannot be attributed at all.
+    A globally administered address matched in the authoritative IEEE registry, or in
+    the curated table when the registry has no usable entry, is the strongest evidence
+    available locally. A declared BLE company code is a weaker hint, and an address the
+    host operating system has masked cannot be attributed at all.
+
+    ``observation_kind`` distinguishes a WiFi BSSID (``"wifi"``) from a BLE advertiser
+    (``"ble"``): only the former treats a locally administered address as host masking
+    rather than as the device's own randomized address. The default keeps the previous
+    behaviour for any other caller.
     """
     kind = address_kind(address)
     if kind == "globally administered address":
-        prefix = _prefix(address)
-        vendor = OUI_PREFIXES.get(prefix)
+        digits = _address_digits(address)
+        match = registry_match(digits)
+        if match and match[1] not in UNHELPFUL_REGISTRY_ORGANIZATIONS:
+            prefix, organization = match
+            return {
+                "vendor": organization,
+                "category": vendor_category(organization),
+                "ouiPrefix": prefix,
+                "basis": BASIS_REGISTRY,
+                "evidenceQuality": QUALITY_REGISTRY,
+            }
+        vendor = OUI_PREFIXES.get(digits[:6])
         if vendor:
             return {
                 "vendor": vendor,
                 "category": vendor_category(vendor),
-                "ouiPrefix": prefix,
+                "ouiPrefix": digits[:6],
                 "basis": BASIS_OUI,
                 "evidenceQuality": QUALITY_OUI,
             }
@@ -575,12 +691,13 @@ def vendor_profile(
             "evidenceQuality": QUALITY_BLE,
         }
     if kind in ("private/randomized address", "multicast address"):
+        masked = observation_kind == "wifi" and kind == "private/randomized address"
         return {
             "vendor": UNKNOWN_VENDOR,
             "category": UNCLASSIFIED,
             "ouiPrefix": None,
-            "basis": BASIS_RANDOMIZED,
-            "evidenceQuality": QUALITY_RANDOMIZED,
+            "basis": BASIS_MASKED if masked else BASIS_RANDOMIZED,
+            "evidenceQuality": QUALITY_MASKED if masked else QUALITY_RANDOMIZED,
         }
     return {
         "vendor": UNKNOWN_VENDOR,

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { db } from "@workspace/db";
 import {
   evidenceRecords,
@@ -13,6 +13,8 @@ import {
 import { desc, eq, and } from "drizzle-orm";
 import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
 import { ownerEntitlements } from "../lib/billing/subscriptions";
+import { deploymentCredential, resolveRelayCredential, type ResolvedRelayCredential } from "../lib/relayAuth";
+import { ownerForRelayTokenHash, touchRelayToken } from "../lib/relays";
 
 const router: IRouter = Router();
 const streamClients = new Map<import("express").Response, string>();
@@ -33,21 +35,21 @@ function emit(event: string, payload: unknown, ownerId?: string) {
   }
 }
 
-function verifyNodeSignature(req: import("express").Request, rawBody: string) {
-  const configuredToken = process.env.BACKSPYNE_NODE_TOKEN;
-  if (!configuredToken || configuredToken.length < 32) return false;
-  const suppliedToken = req.header("x-backspyne-node-token") || "";
-  const signature = req.header("x-backspyne-signature") || "";
-  if (!/^[a-f0-9]{64}$/i.test(signature)) return false;
-  const suppliedTokenBytes = Buffer.from(suppliedToken);
-  const configuredTokenBytes = Buffer.from(configuredToken);
-  if (suppliedTokenBytes.length !== configuredTokenBytes.length || !timingSafeEqual(suppliedTokenBytes, configuredTokenBytes)) return false;
-  const digest = createHmac("sha256", configuredToken)
-    .update(rawBody)
-    .digest("hex");
-  const expected = Buffer.from(digest, "utf8");
-  const actual = Buffer.from(signature, "utf8");
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+/**
+ * Resolves the operator a relay request may report for. The request must carry a valid
+ * HMAC over the exact body keyed by its own token; that token is then matched against
+ * the deployment-wide credential or a per-operator pairing token.
+ */
+async function resolveIngestCredential(req: import("express").Request, rawBody: string): Promise<ResolvedRelayCredential | null> {
+  return resolveRelayCredential(
+    {
+      rawBody,
+      suppliedToken: req.header("x-backspyne-node-token"),
+      signatureHeader: req.header("x-backspyne-signature"),
+    },
+    deploymentCredential(process.env),
+    { operatorForTokenHash: ownerForRelayTokenHash },
+  );
 }
 
 function validSignal(signalDbm: unknown): signalDbm is number {
@@ -384,10 +386,19 @@ router.get("/stream", requireAuth, (req: AuthenticatedRequest, res) => {
 
 router.post("/ingest/telemetry", async (req, res, next) => {
   const rawBody = ((req as typeof req & { rawBody?: Buffer }).rawBody ?? Buffer.from("{}")).toString("utf8");
-  if (!verifyNodeSignature(req, rawBody)) {
+  let credential: ResolvedRelayCredential | null = null;
+  try {
+    credential = await resolveIngestCredential(req, rawBody);
+  } catch (error) {
+    next(error);
+    return;
+  }
+  if (!credential) {
     res.status(401).json({ error: "Invalid local-node signature" });
     return;
   }
+  if (credential.relayTokenId) void touchRelayToken(credential.relayTokenId);
+  const ownerId = credential.ownerId;
   try {
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
       res.status(400).json({ error: "Telemetry body must be a JSON object" });
@@ -419,12 +430,9 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       res.status(413).json({ error: "Telemetry payload exceeds allowed limits" });
       return;
     }
-    const configuredOwnerId = process.env.BACKSPYNE_NODE_OWNER_ID;
-    if (!configuredOwnerId) {
-      res.status(503).json({ error: "Node owner binding is not configured" });
-      return;
-    }
-    if (configuredOwnerId !== body.ownerId) {
+    // The relay must declare the operator its credential belongs to; a mismatch means a
+    // token is being used to write into someone else's account and is refused.
+    if (body.ownerId !== ownerId) {
       res.status(403).json({ error: "Node is not assigned to this operator" });
       return;
     }
@@ -440,14 +448,14 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       .from(scanNodes)
       .where(eq(scanNodes.id, body.nodeId))
       .limit(1);
-    if (currentNode[0] && currentNode[0].ownerId !== body.ownerId) {
+    if (currentNode[0] && currentNode[0].ownerId !== ownerId) {
       res.status(403).json({ error: "Node ID is already assigned to another operator" });
       return;
     }
     // Only brand-new node ids consume relay allowance; an existing relay keeps reporting
     // even if the operator is over the limit for its current plan.
     if (!currentNode[0]) {
-      const allowance = await mayRegisterAdditionalRelay(body.ownerId);
+      const allowance = await mayRegisterAdditionalRelay(ownerId);
       if (!allowance.allowed) {
         res.status(403).json({
           error: `The current plan allows ${allowance.maxRelays} authorized relay${allowance.maxRelays === 1 ? "" : "s"}`,
@@ -461,7 +469,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       .insert(scanNodes)
       .values({
         id: body.nodeId,
-        ownerId: body.ownerId,
+        ownerId,
         name: body.nodeName?.slice(0, 120) || body.nodeId,
         address: req.ip || "local",
         role: nodeProtocol.toUpperCase(),
@@ -488,7 +496,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
             : ("system" as const);
     const event = {
       id: id("telemetry"),
-      ownerId: body.ownerId,
+      ownerId,
       nodeId: body.nodeId,
       protocol: normalizedProtocol,
       observedAt,
@@ -505,7 +513,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
         .from(rfDevices)
         .where(
           and(
-            eq(rfDevices.ownerId, body.ownerId),
+            eq(rfDevices.ownerId, ownerId),
             eq(rfDevices.address, observation.address),
           ),
         )
@@ -532,7 +540,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       const priorServiceUuids = Array.isArray(priorMetadata.serviceUuids) ? priorMetadata.serviceUuids.filter((uuid): uuid is string => typeof uuid === "string") : [];
       const submittedVendor = typeof observation.vendor === "string" ? observation.vendor.slice(0, 120) : "Unknown vendor";
       const values = {
-        ownerId: body.ownerId,
+        ownerId,
         address: observation.address.slice(0, 80),
         vendor: submittedVendor !== "Unknown vendor"
           ? submittedVendor
@@ -556,7 +564,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       }
       await db.insert(rfSightings).values({
         id: id("sighting"),
-        ownerId: body.ownerId,
+        ownerId,
         deviceId: existing[0]?.id ?? deviceId,
         nodeId: body.nodeId,
         observedAt: event.observedAt,
@@ -570,7 +578,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       const confidence = typeof event.metrics.confidence === "number" && Number.isFinite(event.metrics.confidence) ? event.metrics.confidence : null;
       await db.insert(sensingSnapshots).values({
         id: id("sensing"),
-        ownerId: body.ownerId,
+        ownerId,
         nodeId: body.nodeId,
         observedAt: event.observedAt,
         metrics: event.metrics,
