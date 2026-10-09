@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Antenna, Archive, ArrowDownToLine, BarChart3, Bluetooth,
-  CameraOff, Check, CheckCircle2, ChevronRight, CircleHelp, Cpu, Download,
+  CameraOff, Check, CheckCircle2, ChevronRight, CircleHelp, CreditCard, Cpu, Download,
   Eye, FileDown, Filter, Gauge, LayoutDashboard, MapPin,
   LogOut, Menu, Mic, Minus, Network, Plus, Radio, Radar, RefreshCw, ScanLine, Search,
   Shield, ShieldCheck, Smartphone,
-  Signal, Star, Trash2, Wifi, X, Zap,
+  Signal, Star, Trash2, TrendingDown, TrendingUp, Wifi, X, Zap,
 } from 'lucide-react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider, Show, SignIn, SignUp, useClerk, useUser } from '@clerk/react';
@@ -18,6 +18,7 @@ import { Redirect, Route, Switch, Router as WouterRouter, useLocation } from 'wo
 
 type RFDevice = {
   id: string; mac: string; vendor: string; vendorBasis: string; deviceType: string; addressType: string;
+  vendorCategory?: string | null; vendorOui?: string | null; evidenceQuality?: number | null;
   protocol: 'WiFi' | 'BLE' | 'CSI' | 'system'; signal: number | null; signalQualityPercent: number | null;
   maxProximity: string; status: 'active' | 'idle' | 'ghost'; lastSeen: string; firstSeen: string;
   node: string; channel: string; favorite: boolean; details: Record<string, unknown>;
@@ -59,7 +60,7 @@ type HardwareNavigator = Navigator & {
   getBattery?: () => Promise<{ level: number; charging: boolean }>;
   connection?: { effectiveType?: string; downlink?: number };
 };
-type NavView = 'dashboard' | 'ledger' | 'sensing' | 'nodes' | 'hardware';
+type NavView = 'dashboard' | 'ledger' | 'sensing' | 'nodes' | 'hardware' | 'billing';
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -284,6 +285,7 @@ function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMo
     { id: 'sensing', label: 'Sensing', icon: Activity },
     { id: 'nodes', label: 'Network nodes', icon: Network, count: String(nodes.length).padStart(2, '0') },
     { id: 'hardware', label: 'Hardware scan', icon: Cpu },
+    { id: 'billing', label: 'Billing', icon: CreditCard },
   ];
   return <aside className={`sidebar ${mobileOpen ? 'mobile-open' : ''}`}>
     <Brand />
@@ -303,7 +305,7 @@ function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMo
 
  function Topbar({ view, scanning, apiStatus, onOpenMenu, sessionId, onSignOut }: { view: NavView; scanning: boolean; apiStatus: ApiStatus; onOpenMenu: () => void; sessionId: string | null; onSignOut: () => Promise<void> }) {
   const { user } = useUser();
-  const titles: Record<NavView, [string, string]> = { dashboard: ['Operations / overview', 'Local RF environment'], ledger: ['Operations / ledger', 'Discovered device inventory'], sensing: ['Operations / sensing', 'Measured radio adapter data'], nodes: ['Operations / nodes', 'Sensor network topology'], hardware: ['Operations / hardware', 'Device capability bridge'] };
+  const titles: Record<NavView, [string, string]> = { dashboard: ['Operations / overview', 'Local RF environment'], ledger: ['Operations / ledger', 'Discovered device inventory'], sensing: ['Operations / sensing', 'Measured radio adapter data'], nodes: ['Operations / nodes', 'Sensor network topology'], hardware: ['Operations / hardware', 'Device capability bridge'], billing: ['Operations / billing', 'Plans, relays, and entitlements'] };
   const operatorName = user?.firstName || user?.primaryEmailAddress?.emailAddress || 'Operator';
   return <header className="topbar">
     <div className="topbar-context"><button className="menu-button" data-testid="button-open-menu" onClick={onOpenMenu}><Menu size={20} /></button><div className="context-line" /><div><div className="context-title">{titles[view][0]}</div><div className="context-sub">{titles[view][1]}</div></div></div>
@@ -311,8 +313,8 @@ function Sidebar({ view, onNavigate, mobileOpen, onClose, devices, nodes, liveMo
   </header>;
 }
 
-function SignalChart({ values = [] }: { values?: number[] }) {
-  if (values.length < 2) return <div className="chart-empty">No sighting history for this target.</div>;
+function SignalChart({ values = [], emptyMessage = 'No sighting history for this target.' }: { values?: number[]; emptyMessage?: string }) {
+  if (values.length < 2) return <div className="chart-empty">{emptyMessage}</div>;
   const points = values.map((value, index) => `${(index / (values.length - 1)) * 100},${112 - ((value - 45) / 50) * 88}`).join(' ');
   const area = `0,112 ${points} 100,112`;
   return <svg className="chart" viewBox="0 0 100 132" preserveAspectRatio="none" aria-label="Signal history chart">
@@ -347,6 +349,10 @@ function DeviceDetails({ device }: { device: RFDevice }) {
   const serviceUuids = Array.isArray(device.details.serviceUuids) ? device.details.serviceUuids.filter((uuid): uuid is string => typeof uuid === 'string') : [];
   const values: Array<[string, string]> = [
     ['Device class', device.deviceType], ['Vendor evidence', device.vendorBasis], ['Address type', device.addressType],
+    ...(typeof device.details.advertisedVendorHint === 'string' && device.details.advertisedVendorHint ? [['Vendor hint (reported name)', `${device.details.advertisedVendorHint} (self-reported; not verified)`] as [string, string]] : []),
+    ...(device.vendorCategory ? [['Vendor category', device.vendorCategory] as [string, string]] : []),
+    ...(device.vendorOui ? [['OUI prefix', `${device.vendorOui} (hardware address prefix, not a model)`] as [string, string]] : []),
+    ...(typeof device.evidenceQuality === 'number' ? [['Label evidence quality', `${device.evidenceQuality}/100 · ${evidenceTier(device.evidenceQuality)}`] as [string, string]] : []),
     ...(ssid ? [['WiFi network name', ssid] as [string, string]] : []),
     ...(reportedName ? [['BLE advertised name', reportedName] as [string, string]] : []),
     ...(typeof device.details.advertisedManufacturer === 'string' ? [['BLE manufacturer code', `${device.details.advertisedManufacturer} (advertising hint)`] as [string, string]] : []),
@@ -362,7 +368,7 @@ function DeviceDetails({ device }: { device: RFDevice }) {
       {serviceUuids.length > 0 && <div className="device-detail device-detail-wide"><span>Advertised service UUIDs</span><strong>{serviceUuids.join(', ')}</strong></div>}
       {manufacturerData.length > 0 && <div className="device-detail device-detail-wide"><span>Manufacturer data (hex)</span><strong>{manufacturerData.join(' · ')}</strong></div>}
     </div>
-    <p className="device-details-note">Vendor data is based on a globally assigned address prefix or a BLE advertiser company code. A radio name/network name is self-reported and does not establish an exact product model or a nearby person’s identity.</p>
+    <p className="device-details-note">Vendor data is based on a globally assigned address prefix or a BLE advertiser company code. A radio name/network name is self-reported and does not establish an exact product model or a nearby person’s identity. Label evidence quality scores only how the vendor label was derived; it is not a probability that the device is nearby, nor an identity.</p>
   </section>;
 }
 
@@ -384,12 +390,24 @@ function Dashboard({ devices, nodes, selectedId, scanning, onSelect, onFavorite,
   const measuredSignals = visibleDevices.flatMap(device => device.signal === null ? [] : [device.signal]);
   const signalFloor = measuredSignals.length ? String(Math.min(...measuredSignals)) : '—';
   const scanSources = [...new Set(devices.map(device => device.protocol))].join(', ') || 'No measurements';
-  const historyValues = trail.length > 1 ? [...trail].reverse().flatMap(sighting => sighting.signalDbm === null ? [] : [Math.abs(sighting.signalDbm)]) : [];
+  const signalSamples = trail.flatMap(sighting => typeof sighting.signalDbm === 'number' && Number.isFinite(sighting.signalDbm) ? [sighting.signalDbm] : []);
+  const historyValues = signalSamples.length > 1 ? [...signalSamples].reverse().map(value => Math.abs(value)) : [];
+  const latestSampleDbm = signalSamples.length ? signalSamples[0] : null;
+  const oldestSampleDbm = signalSamples.length ? signalSamples[signalSamples.length - 1] : null;
+  const latestSampleText = latestSampleDbm === null ? '—' : `${Math.round(latestSampleDbm)} dBm`;
+  const oldestSampleText = oldestSampleDbm === null ? '—' : `${Math.round(oldestSampleDbm)} dBm`;
+  const sampleSpanMinutes = trail.length < 2 ? null : (() => {
+    const newest = new Date(trail[0].observedAt).getTime();
+    const oldest = new Date(trail[trail.length - 1].observedAt).getTime();
+    return Number.isFinite(newest) && Number.isFinite(oldest) ? Math.max(0, Math.round((newest - oldest) / 60000)) : null;
+  })();
+  const strengthTrend = latestSampleDbm === null || oldestSampleDbm === null ? null : latestSampleDbm - oldestSampleDbm > 3 ? 'stronger' : oldestSampleDbm - latestSampleDbm > 3 ? 'weaker' : 'steady';
+  const historyEmptyMessage = trail.length ? 'Not enough reported signal samples to show a trend' : undefined;
   return <><div className="page-heading"><div><div className="page-kicker">RF command surface / 01</div><h1>Know what is nearby.</h1><p>Measured WiFi access points and BLE advertisements from your authorized local relay. Nearby client devices are not fully discoverable through standard OS scans.</p></div><div className="header-actions"><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
      <div className="signal-banner"><Shield /><span><strong>Authorized environment only.</strong> {liveMode ? 'Signed observations from an authorized local node are flowing into this session.' : apiStatus === 'error' ? 'The API returned an error reading scan data; the relay status cannot be confirmed. The database connection must be repaired before scans can be stored.' : apiStatus === 'unavailable' ? 'The operator API is unavailable, so relay status cannot be checked.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'Checking operator API and authorized relay status.'} This dashboard lists WiFi APs/BLE advertisers only, not all nearby phones or people.</span><button className="banner-action" onClick={() => onNavigate('hardware')}>Hardware scan <ChevronRight size={14} /></button></div>
      <div className="stats-grid"><MetricCard label="Nearby targets" value={String(visibleDevices.length).padStart(2, '0')} note="Current authorized scope" icon={Radio} accent /><MetricCard label="Tracked now" value={String(devices.filter(d => d.status === 'active').length).padStart(2, '0')} note={`${activeNodes} active node${activeNodes === 1 ? '' : 's'}`} icon={Eye} /><MetricCard label="Signal floor" value={signalFloor} note="Lowest observed dBm" icon={Signal} /><MetricCard label="Scan sources" value={scanSources} note="Protocols observed" icon={Shield} /></div>
     <div className="main-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Detected targets</div><div className="panel-subtitle">Schematic layout · direction and distance not measured</div></div><div className={`status-pill ${scanning ? '' : 'paused'}`}><span className="pulse-dot" />{scanning ? 'LIVE SWEEP' : 'SWEEP PAUSED'}</div></div><RadarView devices={devices} selectedId={selectedId} onSelect={onSelect} /></section>
-       <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} /><div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected?.signal !== null && selected ? 'dBm' : 'NO MEASUREMENT'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
+       <section className="panel"><div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{selected ? `${selected.vendor} · ${selected.mac}` : 'Select a target to lock tracking'}</div></div><BarChart3 size={16} style={{ color: '#6a8c8b' }} /></div><div className="history"><SignalChart values={historyValues} emptyMessage={historyEmptyMessage} />{signalSamples.length > 0 && <div className="history-trend" data-testid="signal-history-trend"><div><div className="eyebrow">Samples</div><strong>{signalSamples.length}</strong></div><div><div className="eyebrow">Latest</div><strong>{latestSampleText}</strong></div><div><div className="eyebrow">Oldest</div><strong>{oldestSampleText}</strong></div><div><div className="eyebrow">Span</div><strong>{sampleSpanMinutes === null ? 'unknown' : `${sampleSpanMinutes} min`}</strong></div><div><div className="eyebrow">Reported strength</div><strong>{strengthTrend === null ? 'single sample' : strengthTrend}{strengthTrend === 'stronger' ? <TrendingUp size={13} /> : strengthTrend === 'weaker' ? <TrendingDown size={13} /> : null}</strong></div></div>}{signalSamples.length > 1 && <p className="history-note">Reported-strength trend compares the newest and oldest dBm readings in this sample set. It is a direction indicator only; RSSI is not a distance, position, occupancy, or person measurement.</p>}<div className="history-summary"><div><div className="eyebrow">Current signal</div><div className="history-value">{selected?.signal ?? '—'}<small>{selected?.signal !== null && selected ? 'dBm' : 'NO MEASUREMENT'}</small></div></div><div style={{ textAlign: 'right' }}><div className="eyebrow">Proximity</div><div className="history-value" style={{ fontSize: 14, marginTop: 7 }}>{selected?.maxProximity ?? '—'}</div></div></div></div></section>
     </div>
     <div className="lower-grid"><section className="panel"><div className="panel-header"><div><div className="panel-title">Latest discoveries</div><div className="panel-subtitle">{visibleDevices.length} visible targets · sorted by signal</div></div><button className="btn" data-testid="button-open-ledger" onClick={() => onNavigate('ledger')}>Open ledger <ArrowDownToLine size={13} /></button></div><DeviceRows devices={visibleDevices.slice(0, 4)} selectedId={selectedId} onSelect={onSelect} onFavorite={onFavorite} /></section><section className="panel"><div className="panel-header"><div><div className="panel-title">Scan nodes</div><div className="panel-subtitle">Local sensor topology</div></div><button className="icon-button" data-testid="button-open-nodes" onClick={() => onNavigate('nodes')}><ChevronRight /></button></div><NodeList nodes={nodes} /></section></div>
     {selected && <DeviceDetails device={selected} />}
@@ -510,6 +528,133 @@ function Hardware({ capabilities, refreshing, onRefresh, onRequest, isMobile, ap
   </>;
 }
 
+type BillingEntitlements = { maxRelays: number; historyDays: number; reportExport: boolean; csiResearch: boolean };
+type BillingPlan = { id: string; name: string; priceMonthlyUsd: number; tagline: string; highlights: string[]; entitlements: BillingEntitlements; purchasable?: boolean };
+type BillingCatalog = { configured: boolean; currentPlanId: string; status: string; entitlements: BillingEntitlements; plans: BillingPlan[]; portalAvailable?: boolean };
+
+const referenceTierOutline: Array<{ name: string; summary: string }> = [
+  { name: 'Free', summary: '1 authorized relay · 7-day history · no CSV ledger export · no CSI research panels' },
+  { name: 'Solo', summary: '1 authorized relay · 30-day history · CSV ledger export · no CSI research panels' },
+  { name: 'Team', summary: '5 authorized relays · 90-day history · CSV ledger export · CSI research panels' },
+  { name: 'Consultant', summary: '25 authorized relays · 365-day history · CSV ledger export · CSI research panels' },
+];
+
+function entitlementRows(entitlements: BillingEntitlements): string[] {
+  return [
+    `${entitlements.maxRelays} authorized relay${entitlements.maxRelays === 1 ? '' : 's'}`,
+    `${entitlements.historyDays}-day observation history`,
+    entitlements.reportExport ? 'CSV ledger export' : 'CSV ledger export not included',
+    entitlements.csiResearch ? 'Experimental CSI research panels' : 'Experimental CSI research not included',
+  ];
+}
+
+function evidenceTier(score: number) {
+  if (score >= 70) return 'strong basis';
+  if (score >= 40) return 'moderate basis';
+  if (score > 0) return 'weak basis';
+  return 'no basis';
+}
+
+function Billing() {
+  const [catalog, setCatalog] = useState<BillingCatalog | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [pendingPlan, setPendingPlan] = useState<string | null>(null);
+  const [pendingPortal, setPendingPortal] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/billing/catalog', { credentials: 'include' });
+        if (disposed) return;
+        if (response.status === 401 || response.status === 503) {
+          setError('The operator API is unavailable, so the current plan cannot be read.');
+          setCatalog(null);
+          return;
+        }
+        if (!response.ok) {
+          setError(`The plan request failed (${response.status}).`);
+          setCatalog(null);
+          return;
+        }
+        setCatalog(await response.json() as BillingCatalog);
+        setError('');
+      } catch {
+        if (!disposed) {
+          setError('The plan request failed; check your connection.');
+          setCatalog(null);
+        }
+      } finally {
+        if (!disposed) setLoading(false);
+      }
+    })();
+    return () => { disposed = true; };
+  }, []);
+  const readError = async (response: Response, fallback: string) => {
+    const payload = await response.json().catch(() => null) as { error?: unknown } | null;
+    return typeof payload?.error === 'string' && payload.error ? payload.error : fallback;
+  };
+  const startCheckout = async (planId: string) => {
+    setPendingPlan(planId);
+    setError('');
+    try {
+      const response = await fetch('/api/billing/checkout', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ planId }) });
+      const payload = await response.json().catch(() => null) as { url?: unknown } | null;
+      if (response.ok && typeof payload?.url === 'string' && payload.url) {
+        window.location.assign(payload.url);
+        return;
+      }
+      setError(await readError(response, response.status === 503 ? 'Billing is not configured for this deployment yet.' : `Checkout could not be started (${response.status}).`));
+    } catch {
+      setError('Checkout could not be started; check your connection.');
+    } finally {
+      setPendingPlan(null);
+    }
+  };
+  const openPortal = async () => {
+    setPendingPortal(true);
+    setError('');
+    try {
+      const response = await fetch('/api/billing/portal', { method: 'POST', credentials: 'include' }).catch(() => null);
+      if (!response) {
+        setError('The billing portal request failed; check your connection.');
+        return;
+      }
+      const payload = await response.json().catch(() => null) as { url?: unknown } | null;
+      if (response.ok && typeof payload?.url === 'string' && payload.url) {
+        window.location.assign(payload.url);
+        return;
+      }
+      setError(await readError(response, `The billing portal is unavailable (${response.status}).`));
+    } finally {
+      setPendingPortal(false);
+    }
+  };
+  const currentPlan = catalog ? catalog.plans.find(plan => plan.id === catalog.currentPlanId) ?? null : null;
+  const currentName = currentPlan?.name ?? (catalog ? catalog.currentPlanId : 'unknown');
+  return <><div className="page-heading"><div><div className="page-kicker">Revenue surface / 06</div><h1>Choose your coverage.</h1><p>Plans set the authorized relay allowance, observation history window, ledger export, and access to experimental CSI research panels. Payment details are handled by the payment provider and never reach this console.</p></div>{catalog && <div className={`status-pill ${catalog.configured ? '' : 'warn'}`}><span className={`pulse-dot ${catalog.configured ? '' : 'amber'}`} />{catalog.configured ? `${currentName} plan` : 'BILLING NOT CONFIGURED'}</div>}</div>
+    {loading && <div className="billing-notice" role="status" data-testid="billing-loading">Reading the current plan and entitlements…</div>}
+    {error && <div className="billing-notice error" role="status" data-testid="billing-error">{error}</div>}
+    {catalog && !catalog.configured && <div className="billing-notice" data-testid="billing-unconfigured"><strong>Billing is not configured for this deployment yet.</strong><span> No checkout can be started and no payment method can be added here. An operator must set the server-side payment secrets before plans become purchasable. The outline below is a reference plan, not an active offer:</span><ul>{referenceTierOutline.map(tier => <li key={tier.name}><strong>{tier.name}</strong> — {tier.summary}</li>)}</ul></div>}
+    {catalog && <section className="panel" data-testid="billing-current-plan"><div className="panel-header"><div><div className="panel-title">Current plan</div><div className="panel-subtitle">{currentName} · subscription status {catalog.status}</div></div>{catalog.currentPlanId !== 'free' && <button className="btn" data-testid="button-billing-portal" disabled={pendingPortal} onClick={() => void openPortal()}>{pendingPortal ? <><RefreshCw className="spin" size={13} /> Opening portal</> : 'Manage billing'}</button>}</div><div className="entitlement-grid">{entitlementRows(catalog.entitlements).map(row => <div className="entitlement" key={row}><Check size={13} /><span>{row}</span></div>)}</div></section>}
+    {catalog && catalog.plans.length > 0 && <div className="billing-grid">{catalog.plans.map(plan => {
+      const isCurrent = plan.id === catalog.currentPlanId;
+      const paid = plan.priceMonthlyUsd > 0;
+      // The server decides purchasability: a paid plan whose price id is not configured
+      // on this deployment is listed but cannot be bought here.
+      const purchasable = typeof plan.purchasable === 'boolean' ? plan.purchasable : paid;
+      return <div className={`panel plan-card ${isCurrent ? 'current' : ''}`} key={plan.id} data-testid={`plan-${plan.id}`}>
+        <div className="plan-head"><div><div className="plan-name">{plan.name}</div><div className="plan-tagline">{plan.tagline}</div></div>{isCurrent && <span className="hardware-status connected">CURRENT PLAN</span>}</div>
+        <div className="plan-price">{paid ? <>${plan.priceMonthlyUsd}<small>/mo</small></> : <>Free<small>no charge</small></>}</div>
+        {plan.highlights.length > 0 && <ul className="plan-highlights">{plan.highlights.map(highlight => <li key={highlight}>{highlight}</li>)}</ul>}
+        <div className="plan-entitlements">{entitlementRows(plan.entitlements).map(row => <span key={row}>{row}</span>)}</div>
+        {isCurrent ? <button className="btn" disabled>Active plan</button> : purchasable ? <button className="btn btn-primary" data-testid={`button-upgrade-${plan.id}`} disabled={!catalog.configured || pendingPlan !== null} onClick={() => void startCheckout(plan.id)}>{pendingPlan === plan.id ? 'Starting checkout…' : `Upgrade to ${plan.name}`}</button> : <button className="btn" disabled>{paid ? 'Not enabled on this deployment' : 'Included with every account'}</button>}
+      </div>;
+    })}</div>}
+    {catalog && <p className="billing-disclaimer">Plan changes take effect after the payment provider confirms the subscription. BackSpyne enforces relay allowances server-side; history window, export, and research-panel availability follow the confirmed plan. Prices are shown in USD and exclude any applicable tax collected by the provider.</p>}
+  </>;
+}
+
 function liveText(value: unknown, fallback: string) {
   return typeof value === 'string' && value.trim() ? value : fallback;
 }
@@ -546,7 +691,11 @@ function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
   const observedVendor = liveText(raw.vendor, 'Unknown vendor');
   const advertisedManufacturer = liveText(payload.advertisedManufacturer, '');
   const vendor = observedVendor !== 'Unknown vendor' ? observedVendor : advertisedManufacturer || observedVendor;
-  const vendorBasis = observedVendor !== 'Unknown vendor' ? 'Hardware address prefix (local OUI match)' : advertisedManufacturer ? 'BLE manufacturer-specific data (company code)' : addressType === 'private/randomized address' ? 'Unavailable: address is randomized' : 'No manufacturer evidence reported';
+  const derivedVendorBasis = observedVendor !== 'Unknown vendor' ? 'Hardware address prefix (local OUI match)' : advertisedManufacturer ? 'BLE manufacturer-specific data (company code)' : addressType === 'private/randomized address' ? 'Unavailable: address is randomized' : 'No manufacturer evidence reported';
+  const vendorBasis = liveText(payload.vendorBasis, derivedVendorBasis);
+  const vendorCategory = liveText(payload.vendorCategory, '');
+  const vendorOui = typeof payload.vendorOui === 'string' && /^[0-9A-Fa-f]{6}$/.test(payload.vendorOui) ? payload.vendorOui.toUpperCase() : null;
+  const evidenceQuality = typeof payload.evidenceQuality === 'number' && Number.isFinite(payload.evidenceQuality) && payload.evidenceQuality >= 0 && payload.evidenceQuality <= 100 ? Math.round(payload.evidenceQuality) : null;
   const deviceType = protocol === 'WiFi' ? 'Wi-Fi access point' : protocol === 'BLE' ? 'Bluetooth LE advertiser' : 'Radio observation';
   const seenAt = liveText(raw.lastSeenAt, '');
   const parsedAt = seenAt ? new Date(seenAt).getTime() : Number.NaN;
@@ -557,6 +706,9 @@ function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
     mac: address,
     vendor,
     vendorBasis,
+    vendorCategory: vendorCategory || null,
+    vendorOui,
+    evidenceQuality,
     deviceType,
     addressType,
     protocol,
@@ -789,7 +941,7 @@ function Home() {
    const onSignOut = async () => {
      if (sessionId) await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/close`, { method: 'POST', credentials: 'include' }).catch(() => undefined);
      await signOut({ redirectUrl: basePath || '/' });
-   };    return <div className={`app-shell ${isMobile ? 'mobile-device' : 'desktop-device'}`}><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected, apiStatus }} /><div className="main-content"><Topbar view={view} scanning={scanning} apiStatus={apiStatus} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, apiStatus, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} isMobile={isMobile} apiStatus={apiStatus} />}</main></div></div>;
+   };    return <div className={`app-shell ${isMobile ? 'mobile-device' : 'desktop-device'}`}><Sidebar {...{ view, mobileOpen, onClose: () => setMobileOpen(false), onNavigate: setView, devices, nodes, liveMode, apiConnected, apiStatus }} /><div className="main-content"><Topbar view={view} scanning={scanning} apiStatus={apiStatus} onOpenMenu={() => setMobileOpen(true)} sessionId={sessionId} onSignOut={onSignOut} /><main className="content">{view === 'dashboard' && <Dashboard {...{ devices, nodes, selectedId, scanning, onSelect: setSelectedId, onFavorite: toggleFavorite, onNavigate: setView, liveMode, apiConnected, apiStatus, trail }} />}{view === 'ledger' && <Ledger {...{ devices, selectedId, onSelect: setSelectedId, onFavorite: toggleFavorite, onExport: exportLedger }} />}{view === 'sensing' && <Sensing scanning={scanning} snapshot={sensingSnapshot} apiConnected={apiConnected} />}{view === 'nodes' && <Nodes {...{ nodes, onAdd: addNode, onRemove: removeNode }} />}{view === 'hardware' && <Hardware capabilities={hardware} refreshing={hardwareRefreshing} onRefresh={() => void refreshHardware()} onRequest={requestHardware} isMobile={isMobile} apiStatus={apiStatus} />}{view === 'billing' && <Billing />}</main></div></div>;
 }
 
 function Landing() {

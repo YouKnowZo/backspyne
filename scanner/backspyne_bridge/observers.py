@@ -8,9 +8,32 @@ import shutil
 import subprocess
 from typing import Any
 
-from .vendor import address_kind, ble_manufacturer_for, vendor_for
+from .vendor import (
+    address_kind,
+    ble_manufacturer_for,
+    vendor_for,
+    vendor_hint_from_name,
+    vendor_profile,
+)
 
 LOGGER = logging.getLogger("backspyne.bridge")
+
+
+def _with_name_hints(observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach a self-reported brand hint when a scan reported a name.
+
+    Many access points embed their brand in the SSID. That is useful context when the
+    address prefix is not in the local table, but it is chosen by the device owner, so
+    it is published as a separate hint rather than as the resolved vendor.
+    """
+    for observation in observations:
+        payload = observation.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        hint = vendor_hint_from_name(payload.get("ssid") or payload.get("localName") or payload.get("name"))
+        if hint:
+            payload["advertisedVendorHint"] = hint
+    return observations
 
 
 def _run(command: list[str], timeout: float = 12.0) -> str:
@@ -73,11 +96,11 @@ class WifiObserver:
     def scan(self) -> list[dict[str, Any]]:
         system = platform.system()
         if system == "Linux":
-            return self._linux()
+            return _with_name_hints(self._linux())
         if system == "Darwin":
-            return self._macos()
+            return _with_name_hints(self._macos())
         if system == "Windows":
-            return self._windows()
+            return _with_name_hints(self._windows())
         return []
 
     def _linux(self) -> list[dict[str, Any]]:
@@ -104,13 +127,23 @@ class WifiObserver:
                 if not re.fullmatch(r"[0-9A-Fa-f:]{17}", address):
                     continue
                 signal_percent = _number(signal)
+                profile = vendor_profile(address)
                 observations.append(
                     {
                         "address": address.upper(),
                         "vendor": vendor_for(address),
                         "signalQualityPercent": int(signal_percent) if signal_percent is not None else None,
                         "channel": channel or None,
-                        "payload": {"ssid": ssid, "security": security, "addressType": address_kind(address), "source": "wifi_os_api"},
+                        "payload": {
+                            "ssid": ssid,
+                            "security": security,
+                            "addressType": address_kind(address),
+                            "source": "wifi_os_api",
+                            "vendorCategory": profile["category"],
+                            "vendorOui": profile["ouiPrefix"],
+                            "vendorBasis": profile["basis"],
+                            "evidenceQuality": profile["evidenceQuality"],
+                        },
                     }
                 )
             if observations:
@@ -137,7 +170,19 @@ class WifiObserver:
                     if current:
                         observations.append(current)
                     address = bss.group(1).upper()
-                    current = {"address": address, "vendor": vendor_for(address), "payload": {"addressType": address_kind(address), "source": "wifi_os_api"}}
+                    profile = vendor_profile(address)
+                    current = {
+                        "address": address,
+                        "vendor": vendor_for(address),
+                        "payload": {
+                            "addressType": address_kind(address),
+                            "source": "wifi_os_api",
+                            "vendorCategory": profile["category"],
+                            "vendorOui": profile["ouiPrefix"],
+                            "vendorBasis": profile["basis"],
+                            "evidenceQuality": profile["evidenceQuality"],
+                        },
+                    }
                     continue
                 if current:
                     ssid = re.search(r"^\s*SSID:\s*(.*)$", line)
@@ -176,6 +221,7 @@ class WifiObserver:
             if not address:
                 continue
             channel = network.wlanChannel()
+            profile = vendor_profile(address)
             observations.append({
                 "address": address.upper(),
                 "vendor": vendor_for(address),
@@ -186,6 +232,10 @@ class WifiObserver:
                     "security": str(network.security()) if hasattr(network, "security") else "unknown",
                     "addressType": address_kind(address),
                     "source": "wifi_os_api",
+                    "vendorCategory": profile["category"],
+                    "vendorOui": profile["ouiPrefix"],
+                    "vendorBasis": profile["basis"],
+                    "evidenceQuality": profile["evidenceQuality"],
                 },
             })
         if not observations:
@@ -211,7 +261,20 @@ class WifiObserver:
                 if current:
                     observations.append(current)
                 address = bssid.group(1).upper()
-                current = {"address": address, "vendor": vendor_for(address), "payload": {"ssid": current_ssid, "addressType": address_kind(address), "source": "wifi_os_api"}}
+                profile = vendor_profile(address)
+                current = {
+                    "address": address,
+                    "vendor": vendor_for(address),
+                    "payload": {
+                        "ssid": current_ssid,
+                        "addressType": address_kind(address),
+                        "source": "wifi_os_api",
+                        "vendorCategory": profile["category"],
+                        "vendorOui": profile["ouiPrefix"],
+                        "vendorBasis": profile["basis"],
+                        "evidenceQuality": profile["evidenceQuality"],
+                    },
+                }
                 continue
             if current:
                 signal = re.search(r"Signal\s*:\s*(\d+)%", line)
@@ -245,6 +308,8 @@ class BleObserver:
             address = getattr(device, "address", None)
             if not address:
                 continue
+            manufacturer_data = getattr(advertisement, "manufacturer_data", {}) or {}
+            profile = vendor_profile(address, manufacturer_data)
             observations.append(
                 {
                     "address": address.upper(),
@@ -256,13 +321,15 @@ class BleObserver:
                         "name": getattr(device, "name", None),
                         "localName": getattr(advertisement, "local_name", None),
                         "addressType": "BLE address type not exposed by adapter",
-                        "advertisedManufacturer": ble_manufacturer_for(
-                            getattr(advertisement, "manufacturer_data", {}) or {}
-                        ),
+                        "advertisedManufacturer": ble_manufacturer_for(manufacturer_data),
                         "manufacturerData": {
                             str(key): value.hex()
-                            for key, value in (getattr(advertisement, "manufacturer_data", {}) or {}).items()
+                            for key, value in manufacturer_data.items()
                         },
+                        "vendorCategory": profile["category"],
+                        "vendorOui": profile["ouiPrefix"],
+                        "vendorBasis": profile["basis"],
+                        "evidenceQuality": profile["evidenceQuality"],
                     },
                 }
             )
@@ -270,7 +337,7 @@ class BleObserver:
             LOGGER.warning("Bluetooth adapter returned no nearby advertising devices")
         else:
             LOGGER.info("Bluetooth scan found %d nearby advertising devices", len(observations))
-        return observations
+        return _with_name_hints(observations)
 
 
 class CsiObserver:

@@ -112,6 +112,27 @@ export const sensingSnapshots = pgTable("backspyne_sensing_snapshots", {
   uncertainty: jsonb("uncertainty").$type<Record<string, unknown>>().notNull().default({}),
 });
 
+// Billing state is written only by the verified Stripe webhook. A stored plan is
+// authoritative only while `status` is active/trialing; every other state falls back
+// to the free entitlements at read time (see the billing plan catalog).
+export const subscriptions = pgTable("backspyne_subscriptions", {
+  ownerId: text("owner_id").primaryKey(),
+  planId: text("plan_id").notNull().default("free"),
+  status: text("status").notNull().default("inactive"),
+  stripeCustomerId: text("stripe_customer_id"),
+  stripeSubscriptionId: text("stripe_subscription_id"),
+  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// One row per processed Stripe event id, which makes webhook handling idempotent.
+export const billingEvents = pgTable("backspyne_billing_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  ownerId: text("owner_id"),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const insertScanSessionSchema = createInsertSchema(scanSessions);
 export const insertScanNodeSchema = createInsertSchema(scanNodes);
 export const insertRfDeviceSchema = createInsertSchema(rfDevices);
@@ -127,6 +148,8 @@ export type RfSighting = typeof rfSightings.$inferSelect;
 export type TelemetryEvent = typeof telemetryEvents.$inferSelect;
 export type EvidenceRecord = typeof evidenceRecords.$inferSelect;
 export type SensingSnapshot = typeof sensingSnapshots.$inferSelect;
+export type Subscription = typeof subscriptions.$inferSelect;
+export type BillingEvent = typeof billingEvents.$inferSelect;
 
 export const telemetryObservationSchema = z.object({
   address: z.string().optional(),

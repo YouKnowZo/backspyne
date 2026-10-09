@@ -12,6 +12,7 @@ import {
 } from "@workspace/db/schema";
 import { desc, eq, and } from "drizzle-orm";
 import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
+import { ownerEntitlements } from "../lib/billing/subscriptions";
 
 const router: IRouter = Router();
 const streamClients = new Map<import("express").Response, string>();
@@ -57,6 +58,16 @@ function parseDate(value: unknown, fallback: Date) {
   if (typeof value !== "string") return fallback;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+/**
+ * Relay allowance for an operator, from the plan they are actually entitled to. Read
+ * failures fall back to the free allowance, so a billing problem can never widen access.
+ */
+async function mayRegisterAdditionalRelay(ownerId: string): Promise<{ allowed: boolean; maxRelays: number }> {
+  const { entitlements } = await ownerEntitlements(ownerId);
+  const existing = await db.select({ id: scanNodes.id }).from(scanNodes).where(eq(scanNodes.ownerId, ownerId));
+  return { allowed: existing.length < entitlements.maxRelays, maxRelays: entitlements.maxRelays };
 }
 
 router.get("/me", requireAuth, (req: AuthenticatedRequest, res) => {
@@ -118,6 +129,15 @@ router.post("/nodes", requireAuth, async (req: AuthenticatedRequest, res, next) 
     const role = typeof req.body?.role === "string" ? req.body.role.trim().slice(0, 80) : "Sensor relay";
     if (!name || !address) {
       res.status(400).json({ error: "name and address are required" });
+      return;
+    }
+    const allowance = await mayRegisterAdditionalRelay(req.userId!);
+    if (!allowance.allowed) {
+      res.status(403).json({
+        error: `The current plan allows ${allowance.maxRelays} authorized relay${allowance.maxRelays === 1 ? "" : "s"}`,
+        code: "relay_limit_reached",
+        maxRelays: allowance.maxRelays,
+      });
       return;
     }
     const node = {
@@ -423,6 +443,19 @@ router.post("/ingest/telemetry", async (req, res, next) => {
     if (currentNode[0] && currentNode[0].ownerId !== body.ownerId) {
       res.status(403).json({ error: "Node ID is already assigned to another operator" });
       return;
+    }
+    // Only brand-new node ids consume relay allowance; an existing relay keeps reporting
+    // even if the operator is over the limit for its current plan.
+    if (!currentNode[0]) {
+      const allowance = await mayRegisterAdditionalRelay(body.ownerId);
+      if (!allowance.allowed) {
+        res.status(403).json({
+          error: `The current plan allows ${allowance.maxRelays} authorized relay${allowance.maxRelays === 1 ? "" : "s"}`,
+          code: "relay_limit_reached",
+          maxRelays: allowance.maxRelays,
+        });
+        return;
+      }
     }
     await db
       .insert(scanNodes)
