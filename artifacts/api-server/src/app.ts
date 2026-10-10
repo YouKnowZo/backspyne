@@ -131,6 +131,9 @@ app.get("/", serveShell);
 app.get("/index.html", serveShell);
 app.get("/legal", serveShell);
 app.get("/user-portal", serveShell);
+// The console's views live at their own addresses, so a deep link, a shared link, or a
+// refresh inside any of them has to reach the shell rather than a 404.
+app.get("/user-portal/*splat", serveShell);
 app.get("/sign-in", serveShell);
 app.get("/sign-in/*splat", serveShell);
 app.get("/sign-up", serveShell);

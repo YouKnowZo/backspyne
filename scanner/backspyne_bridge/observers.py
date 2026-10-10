@@ -266,11 +266,20 @@ class WifiObserver:
             output = _run(["netsh", "wlan", "show", "networks", "mode=bssid"], timeout=30.0)
         observations: list[dict[str, Any]] = []
         current_ssid = ""
+        # netsh states the protection mode once per network, above its BSSID entries, so it
+        # is carried onto every BSSID in that block. Without this the encryption section of
+        # an assessment is empty on Windows, which is where most relays actually run.
+        current_authentication = ""
         current: dict[str, Any] | None = None
         for line in output.splitlines():
             ssid = re.search(r"^\s*SSID\s+\d+\s*:\s*(.*)$", line)
             if ssid:
                 current_ssid = ssid.group(1).strip()
+                current_authentication = ""
+            authentication = re.search(r"^\s*Authentication\s*:\s*(.*)$", line)
+            if authentication:
+                current_authentication = authentication.group(1).strip()
+                continue
             bssid = re.search(r"BSSID\s+\d+\s*:\s*([0-9a-f:]{17})", line, re.IGNORECASE)
             if bssid:
                 if current:
@@ -282,6 +291,7 @@ class WifiObserver:
                     "vendor": vendor_for(address),
                     "payload": {
                         "ssid": current_ssid,
+                        "security": current_authentication,
                         "addressType": address_kind(address),
                         "source": "wifi_os_api",
                         "vendorCategory": profile["category"],

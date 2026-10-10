@@ -48,6 +48,18 @@ BACKSPYNE_NODE_TOKEN=
 BACKSPYNE_NODE_OWNER_ID=
 
 ## ---------------------------------------------------------------------------
+## Optional: client assessment links
+## ---------------------------------------------------------------------------
+
+# Signs the link an operator hands to a client who has no BackSpyne account. The account,
+# the printed labels, and a seven-day expiry all travel inside the signature, so a
+# recipient can only open the account that issued the link, and cannot extend it by
+# editing the URL. When unset, BACKSPYNE_NODE_TOKEN signs these links instead (with
+# domain separation), so sharing works without a second secret; set this one to rotate
+# the two independently.
+BACKSPYNE_REPORT_SHARE_SECRET=
+
+## ---------------------------------------------------------------------------
 ## Required for billing / revenue features (optional until you sell plans)
 ## ---------------------------------------------------------------------------
 
