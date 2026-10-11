@@ -13,27 +13,32 @@ import {
 import { desc, eq, and } from "drizzle-orm";
 import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
 import { ownerEntitlements } from "../lib/billing/subscriptions";
+import { storeObservations } from "../lib/ingest";
+import { emit, registerStreamClient, unregisterStreamClient } from "../lib/stream";
+import {
+  DEFAULT_RADIO_MODEL,
+  estimatePosition,
+  estimateTrack,
+  impliedDistanceMeters,
+  latestPerRelay,
+} from "../lib/localization";
+import { calibratedRadioModel } from "../lib/calibration";
+import { readActiveCalibration } from "../lib/calibrationStore";
+import { ensureNodePlacementSchema } from "../lib/locationSchema";
 import { deploymentCredential, resolveRelayCredential, type ResolvedRelayCredential } from "../lib/relayAuth";
 import { ownerForRelayTokenHash, touchRelayToken } from "../lib/relays";
+import { vantagePointFor } from "../lib/vantage";
+import { dbmFromLinkQualityPercent, usableDbm } from "../lib/signal";
 
 const router: IRouter = Router();
-const streamClients = new Map<import("express").Response, string>();
 
 function id(prefix: string) {
   return `${prefix}_${randomUUID()}`;
 }
 
-function emit(event: string, payload: unknown, ownerId?: string) {
-  const message = `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const [client, clientOwnerId] of streamClients) {
-    if (ownerId && clientOwnerId !== ownerId) continue;
-    try {
-      client.write(message);
-    } catch {
-      streamClients.delete(client);
-    }
-  }
-}
+// Where a radio was heard from — a relay's placement, or the position a phone recorded —
+// lives in `lib/vantage.ts`, because the calibration walk reads the same vantage points and
+// the two must agree on how they are bucketed.
 
 /**
  * Resolves the operator a relay request may report for. The request must carry a valid
@@ -50,10 +55,6 @@ async function resolveIngestCredential(req: import("express").Request, rawBody: 
     deploymentCredential(process.env),
     { operatorForTokenHash: ownerForRelayTokenHash },
   );
-}
-
-function validSignal(signalDbm: unknown): signalDbm is number {
-  return typeof signalDbm === "number" && Number.isFinite(signalDbm) && signalDbm >= -127 && signalDbm <= 20;
 }
 
 function parseDate(value: unknown, fallback: Date) {
@@ -91,25 +92,90 @@ router.get("/devices", requireAuth, async (req: AuthenticatedRequest, res, next)
       .orderBy(desc(rfSightings.observedAt))
       .limit(1000);
     const latestQuality = new Map<string, number>();
+    const latestSource = new Map<string, string>();
     for (const sighting of sightings) {
       const meta = sighting.signalQualityPercent as Record<string, unknown>;
       if (!latestQuality.has(sighting.deviceId) && typeof meta.signalQualityPercent === "number") {
         latestQuality.set(sighting.deviceId, meta.signalQualityPercent);
       }
+      if (!latestSource.has(sighting.deviceId) && typeof meta.signalSource === "string") {
+        latestSource.set(sighting.deviceId, meta.signalSource);
+      }
     }
-    res.json({ devices: rows.map((device) => ({ ...device, signalQualityPercent: latestQuality.get(device.id) ?? null })) });
+    res.json({
+      devices: rows.map((device) => ({
+        ...device,
+        signalQualityPercent: latestQuality.get(device.id) ?? null,
+        // Where the stored level came from. A sighting written since levels began to be
+        // derived from link quality says so itself; an older row is read from what it holds,
+        // so a WiFi access point seen from Windows is labelled as a derived level rather than
+        // passed off as a driver measurement.
+        signalSource: storedLevelSource(device.lastSignalDbm, latestSource.get(device.id), latestQuality.has(device.id)),
+      })),
+    });
   } catch (error) {
     next(error);
   }
 });
 
-router.get("/nodes", requireAuth, async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const rows = await db
+/**
+ * Where a device's stored level came from, in the vocabulary `lib/signal.ts` defines.
+ *
+ * A recorded source is authoritative. Without one, a device that holds a level got it from a
+ * dBm the adapter reported; a device with no level but a known percentage is reported as a
+ * link-quality measurement, which is what it is.
+ */
+function storedLevelSource(lastSignalDbm: number | null, recorded: string | undefined, percentKnown: boolean): string | null {
+  if (recorded === "adapter dBm" || recorded === "link-quality percentage") return recorded;
+  if (typeof lastSignalDbm === "number" && Number.isFinite(lastSignalDbm)) return "adapter dBm";
+  return percentKnown ? "link-quality percentage" : null;
+}
+
+/**
+ * The level to model from, for one stored sighting: the adapter's own dBm when it reported
+ * one, otherwise the level its link-quality percentage maps to. Returns null when the sighting
+ * holds neither, because a row with no level cannot constrain a position.
+ */
+function sightingLevel(sighting: { signalDbm: number | null; metadata: unknown }): { dbm: number; derived: boolean } | null {
+  if (usableDbm(sighting.signalDbm)) return { dbm: sighting.signalDbm, derived: false };
+  const metadata = sighting.metadata && typeof sighting.metadata === "object" ? sighting.metadata as Record<string, unknown> : {};
+  const derived = dbmFromLinkQualityPercent(metadata.signalQualityPercent);
+  return derived === null ? null : { dbm: derived, derived: true };
+}
+
+/**
+ * The relay list, which the console polls, so it must answer even when the placement
+ * columns could not be added. The fallback selects the columns that have always existed and
+ * reports no placement rather than failing the whole request.
+ */
+async function relayRowsForOwner(ownerId: string) {
+  if (await ensureNodePlacementSchema()) {
+    return db
       .select()
       .from(scanNodes)
-      .where(eq(scanNodes.ownerId, req.userId!))
+      .where(eq(scanNodes.ownerId, ownerId))
       .orderBy(desc(scanNodes.lastHeartbeatAt));
+  }
+  return db
+    .select({
+      id: scanNodes.id,
+      ownerId: scanNodes.ownerId,
+      name: scanNodes.name,
+      address: scanNodes.address,
+      role: scanNodes.role,
+      status: scanNodes.status,
+      lastHeartbeatAt: scanNodes.lastHeartbeatAt,
+      capabilities: scanNodes.capabilities,
+      createdAt: scanNodes.createdAt,
+    })
+    .from(scanNodes)
+    .where(eq(scanNodes.ownerId, ownerId))
+    .orderBy(desc(scanNodes.lastHeartbeatAt));
+}
+
+router.get("/nodes", requireAuth, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const rows = await relayRowsForOwner(req.userId!);
     const now = Date.now();
     const nodes = rows.map((node) => {
       const age = node.lastHeartbeatAt ? now - node.lastHeartbeatAt.getTime() : Number.POSITIVE_INFINITY;
@@ -168,6 +234,30 @@ router.patch("/nodes/:id", requireAuth, async (req: AuthenticatedRequest, res, n
     if (typeof req.body?.role === "string") values.role = req.body.role.trim().slice(0, 80);
     if (req.body?.status === "online" || req.body?.status === "offline" || req.body?.status === "degraded") {
       values.status = req.body.status;
+    }
+    // Placement is operator-entered, so it is validated here rather than trusted: a site
+    // frame further than 10 km across is a typo, not a site.
+    const placementRequested = req.body?.positionX !== undefined || req.body?.positionY !== undefined || req.body?.positionLabel !== undefined;
+    if (placementRequested) {
+      if (!(await ensureNodePlacementSchema())) {
+        res.status(503).json({ error: "Relay placement is unavailable on this deployment", code: "placement_unavailable" });
+        return;
+      }
+      const readCoordinate = (value: unknown): number | null | undefined => {
+        if (value === null) return null;
+        if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > 10_000) return undefined;
+        return Math.round(value * 10) / 10;
+      };
+      const x = readCoordinate(req.body?.positionX);
+      const y = readCoordinate(req.body?.positionY);
+      if (x === undefined || y === undefined || (x === null) !== (y === null)) {
+        res.status(400).json({ error: "positionX and positionY must both be numbers within ±10000 metres, or both null to clear a placement" });
+        return;
+      }
+      values.positionX = x;
+      values.positionY = y;
+      const label = typeof req.body?.positionLabel === "string" ? req.body.positionLabel.trim().slice(0, 80) : "";
+      values.positionLabel = x === null ? null : label || null;
     }
     const [node] = await db
       .update(scanNodes)
@@ -229,12 +319,184 @@ router.get("/devices/:id/trail", requireAuth, async (req: AuthenticatedRequest, 
       .where(and(eq(rfSightings.deviceId, String(req.params.id)), eq(rfSightings.ownerId, req.userId!)))
       .orderBy(desc(rfSightings.observedAt))
       .limit(250);
-    res.json({ sightings: sightings.map((sighting) => ({
-      observedAt: sighting.observedAt,
-      signalDbm: sighting.signalDbm,
-      distanceMeters: null,
-      signalQualityPercent: (sighting.metadata as Record<string, unknown>).signalQualityPercent ?? null,
-    })) });
+    res.json({ sightings: sightings.map((sighting) => {
+      // A trail reads the level the model would use, so a WiFi access point with only a
+      // link-quality percentage shows the level it maps to, labelled with where it came from.
+      const level = sightingLevel(sighting);
+      const metadata = sighting.metadata as Record<string, unknown>;
+      return {
+        observedAt: sighting.observedAt,
+        signalDbm: level ? level.dbm : null,
+        distanceMeters: null,
+        signalQualityPercent: metadata.signalQualityPercent ?? null,
+        levelDerived: level ? level.derived : false,
+      };
+    }) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** How far back a position looks, and how the track is bucketed. */
+const LOCATION_WINDOW_MINUTES = 30;
+const LOCATION_SIGHTING_LIMIT = 400;
+const TRACK_BUCKET_SECONDS = 60;
+
+/**
+ * Where a stored radio has been heard from, and how well that constrains it.
+ *
+ * Two rules decide the shape of this response. Only relays the operator has placed are
+ * vantage points, so an unplaced relay is reported as a relay that heard the radio and
+ * nothing more. And the geometry decides what is printed: the estimate carries its status,
+ * so the portal can show a fix, two candidates, or a ring instead of a confident dot.
+ */
+router.get("/location/:deviceId", requireAuth, async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const deviceId = String(req.params.deviceId);
+    const [device] = await db
+      .select()
+      .from(rfDevices)
+      .where(and(eq(rfDevices.id, deviceId), eq(rfDevices.ownerId, req.userId!)))
+      .limit(1);
+    if (!device) {
+      res.status(404).json({ error: "Device not found" });
+      return;
+    }
+    if (!(await ensureNodePlacementSchema())) {
+      res.json({
+        available: false,
+        reason: "Relay placement is unavailable on this deployment, so no position can be modelled.",
+        device: { id: device.id, address: device.address, vendor: device.vendor, protocol: device.protocol },
+      });
+      return;
+    }
+    const since = new Date(Date.now() - LOCATION_WINDOW_MINUTES * 60_000);
+    const [nodes, sightings, calibration] = await Promise.all([
+      db.select().from(scanNodes).where(eq(scanNodes.ownerId, req.userId!)),
+      db
+        .select()
+        .from(rfSightings)
+        .where(and(eq(rfSightings.deviceId, deviceId), eq(rfSightings.ownerId, req.userId!)))
+        .orderBy(desc(rfSightings.observedAt))
+        .limit(LOCATION_SIGHTING_LIMIT),
+      readActiveCalibration(req.userId!),
+    ]);
+    // The model in force: this site's fitted constants when a calibration walk has been kept,
+    // otherwise the deployed defaults. A radio that was itself calibrated uses its own
+    // reference level, because that is where its transmit power was actually measured.
+    const model = calibration ? calibratedRadioModel(calibration, device.id) : DEFAULT_RADIO_MODEL;
+    const deviceCalibrated = Boolean(calibration?.targets.some((target) => target.targetId === device.id));
+    const recent = sightings.filter((sighting) => sighting.observedAt >= since);
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    // A WiFi access point heard only from a Windows relay reports a link-quality percentage
+    // and no power, and an access point is exactly the radio an operator is trying to place,
+    // so the level that percentage maps to is what the geometry below uses. Every row records
+    // whether the level was derived, and the note printed with the estimate says so when any
+    // of them were.
+    let derivedRows = 0;
+    const placedRows = recent.flatMap((sighting) => {
+      const vantage = vantagePointFor(sighting, nodeById.get(sighting.nodeId));
+      const level = sightingLevel(sighting);
+      if (!vantage || !level) return [];
+      if (level.derived) derivedRows += 1;
+      return [{
+        nodeId: vantage.key,
+        nodeName: vantage.name,
+        signalDbm: level.dbm,
+        derived: level.derived,
+        observedAt: sighting.observedAt,
+        x: vantage.x,
+        y: vantage.y,
+      }];
+    });
+
+    // Per-relay detail that does not depend on placement: what each vantage point heard.
+    const perNode = new Map<string, { nodeId: string; name: string; placed: boolean; x: number | null; y: number | null; levels: number[]; derived: boolean; lastObservedAt: string }>();
+    for (const sighting of recent) {
+      const node = nodeById.get(sighting.nodeId);
+      const level = sightingLevel(sighting);
+      const entry = perNode.get(sighting.nodeId) ?? {
+        nodeId: sighting.nodeId,
+        name: node?.name ?? "Unpaired relay",
+        placed: typeof node?.positionX === "number" && typeof node?.positionY === "number",
+        x: node?.positionX ?? null,
+        y: node?.positionY ?? null,
+        levels: [],
+        derived: false,
+        lastObservedAt: sighting.observedAt.toISOString(),
+      };
+      if (level && entry.levels.length < 5) {
+        entry.levels.push(level.dbm);
+        // A relay reports one vocabulary, so this marks the level this radio was heard at from
+        // this vantage point; it travels beside the implied distance rather than per sample.
+        entry.derived = entry.derived || level.derived;
+      }
+      perNode.set(sighting.nodeId, entry);
+    }
+    const relays = [...perNode.values()]
+      .map((relay) => {
+        const levels = [...relay.levels].sort((left, right) => left - right);
+        const middle = Math.floor(levels.length / 2);
+        const median = levels.length ? (levels.length % 2 ? levels[middle] : (levels[middle - 1] + levels[middle]) / 2) : null;
+        return {
+          nodeId: relay.nodeId,
+          name: relay.name,
+          placed: relay.placed,
+          x: relay.x,
+          y: relay.y,
+          signalDbm: median,
+          samples: levels.length,
+          /** True when this level came from the driver's link-quality percentage. */
+          levelDerived: relay.derived,
+          lastObservedAt: relay.lastObservedAt,
+          impliedDistanceMeters: median === null ? null : Math.round(impliedDistanceMeters(median, model) * 10) / 10,
+        };
+      })
+      .sort((left, right) => (right.signalDbm ?? -999) - (left.signalDbm ?? -999));
+
+    // One observation per vantage point: the median of the levels that vantage point reported,
+    // which is the same measurement with less channel noise and no new claim.
+    const vantageRows = latestPerRelay(placedRows);
+    const mobileVantages = new Set(placedRows.filter((row) => row.nodeId.includes("#")).map((row) => row.nodeId));
+    const estimate = estimatePosition(vantageRows, model);
+    const derivedVantages = new Set(placedRows.filter((row) => row.derived).map((row) => row.nodeId)).size;
+    if (mobileVantages.size) {
+      estimate.note = `${estimate.note} ${mobileVantages.size} vantage point${mobileVantages.size === 1 ? "" : "s"} in this window ${mobileVantages.size === 1 ? "was" : "were"} recorded while a phone was moving, so ${mobileVantages.size === 1 ? "its" : "their"} own reported position error is part of this estimate as well as the radio model's.`;
+    }
+    if (derivedVantages) {
+      estimate.note = `${estimate.note} ${derivedVantages} of these levels came from an adapter's link-quality percentage rather than measured power: the percentage is the driver's own 0-100 scale, which maps to half-decibel steps from -100 dBm at 0% to -50 dBm at 100% and saturates at the top, so distances modelled from it carry the driver's rounding and scale error on top of the usual wall and antenna uncertainty.`;
+    }
+
+    res.json({
+      available: true,
+      device: {
+        id: device.id,
+        address: device.address,
+        vendor: device.vendor,
+        protocol: device.protocol,
+        lastSignalDbm: device.lastSignalDbm,
+        lastSeenAt: device.lastSeenAt,
+      },
+      model: {
+        ...model,
+        windowMinutes: LOCATION_WINDOW_MINUTES,
+        bucketSeconds: TRACK_BUCKET_SECONDS,
+        calibrated: Boolean(calibration),
+        calibratedAt: calibration?.calibratedAt ?? null,
+        calibrationId: calibration?.id ?? null,
+        calibrationSamples: calibration?.samples ?? null,
+        calibrationVantages: calibration?.vantages ?? null,
+        residualRmsDb: calibration?.residualRmsDb ?? null,
+        fittedFrom: calibration?.targets.map((target) => target.label) ?? [],
+        deviceCalibrated,
+        source: calibration ? "calibration walk fitted in this site" : "deployed generic defaults",
+      },
+      placement: { heard: relays.length, placed: relays.filter((relay) => relay.placed).length },
+      relays,
+      estimate,
+      vantages: { used: vantageRows.length, fromPhone: mobileVantages.size, derivedLevels: derivedVantages },
+      track: estimateTrack(placedRows, { bucketSeconds: TRACK_BUCKET_SECONDS, model }),
+    });
   } catch (error) {
     next(error);
   }
@@ -376,11 +638,11 @@ router.get("/stream", requireAuth, (req: AuthenticatedRequest, res) => {
     "X-Accel-Buffering": "no",
   });
   res.write(`event: ready\ndata: ${JSON.stringify({ userId: req.userId })}\n\n`);
-  streamClients.set(res, req.userId!);
+  registerStreamClient(res, req.userId!);
   const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 20_000);
   req.on("close", () => {
     clearInterval(heartbeat);
-    streamClients.delete(res);
+    unregisterStreamClient(res);
   });
 });
 
@@ -505,74 +767,15 @@ router.post("/ingest/telemetry", async (req, res, next) => {
     };
     await db.insert(telemetryEvents).values(event);
 
-    for (const observation of event.observations) {
-      if (typeof observation.address !== "string" || !/^[0-9A-Fa-f:.-]{1,80}$/.test(observation.address)) continue;
-      const deviceId = id("device");
-      const existing = await db
-        .select({ id: rfDevices.id, vendor: rfDevices.vendor, channel: rfDevices.channel, metadata: rfDevices.metadata })
-        .from(rfDevices)
-        .where(
-          and(
-            eq(rfDevices.ownerId, ownerId),
-            eq(rfDevices.address, observation.address),
-          ),
-        )
-        .limit(1);
-      const source = observation.payload?.source;
-      const observationProtocol = source === "ble_adapter" ? "BLE" as const : source === "wifi_os_api" ? "WiFi" as const : normalizedProtocol;
-      const observationPayload = { ...(observation.payload || {}) };
-      delete observationPayload.source;
-      const priorMetadata = existing[0]?.metadata ?? {};
-      const priorPayload = priorMetadata.payload && typeof priorMetadata.payload === "object"
-        ? priorMetadata.payload as Record<string, unknown>
-        : {};
-      const mergedPayload: Record<string, unknown> = {
-        ...priorPayload,
-        ...Object.fromEntries(Object.entries(observationPayload).filter(([, value]) => value !== null && value !== "")),
-      };
-      if (priorPayload.manufacturerData && observationPayload.manufacturerData && typeof priorPayload.manufacturerData === "object" && typeof observationPayload.manufacturerData === "object") {
-        mergedPayload.manufacturerData = {
-          ...priorPayload.manufacturerData as Record<string, unknown>,
-          ...observationPayload.manufacturerData as Record<string, unknown>,
-        };
-      }
-      const currentServiceUuids = observation.serviceUuids?.filter((uuid) => typeof uuid === "string") || [];
-      const priorServiceUuids = Array.isArray(priorMetadata.serviceUuids) ? priorMetadata.serviceUuids.filter((uuid): uuid is string => typeof uuid === "string") : [];
-      const submittedVendor = typeof observation.vendor === "string" ? observation.vendor.slice(0, 120) : "Unknown vendor";
-      const values = {
-        ownerId,
-        address: observation.address.slice(0, 80),
-        vendor: submittedVendor !== "Unknown vendor"
-          ? submittedVendor
-          : observationProtocol === "BLE" || observationPayload.addressType === "private/randomized address"
-            ? "Unknown vendor"
-            : (existing[0]?.vendor ?? submittedVendor),
-        protocol: observationProtocol,
-        lastSignalDbm: validSignal(observation.signalDbm) ? observation.signalDbm : null,
-        channel: typeof observation.channel === "string" ? observation.channel.slice(0, 40) : existing[0]?.channel ?? null,
-        lastSeenAt: event.observedAt,
-        metadata: {
-          ...priorMetadata,
-          serviceUuids: [...new Set([...priorServiceUuids, ...currentServiceUuids])].slice(0, 64),
-          payload: mergedPayload,
-        },
-      };
-      if (existing[0]) {
-        await db.update(rfDevices).set(values).where(eq(rfDevices.id, existing[0].id));
-      } else {
-        await db.insert(rfDevices).values({ id: deviceId, ...values });
-      }
-      await db.insert(rfSightings).values({
-        id: id("sighting"),
-        ownerId,
-        deviceId: existing[0]?.id ?? deviceId,
-        nodeId: body.nodeId,
-        observedAt: event.observedAt,
-        signalDbm: validSignal(observation.signalDbm) ? observation.signalDbm : null,
-        distanceMeters: null,
-        metadata: { channel: typeof observation.channel === "string" ? observation.channel.slice(0, 40) : null, signalQualityPercent: typeof observation.signalQualityPercent === "number" && observation.signalQualityPercent >= 0 && observation.signalQualityPercent <= 100 ? observation.signalQualityPercent : null },
-      });
-    }
+    // Every ingest path stores observations through one writer, so the ledger cannot
+    // disagree with itself about how a device or a sighting is stored.
+    await storeObservations({
+      ownerId,
+      nodeId: body.nodeId,
+      protocol: normalizedProtocol,
+      observedAt: event.observedAt,
+      observations: event.observations,
+    });
 
     if (Object.keys(event.metrics).length) {
       const confidence = typeof event.metrics.confidence === "number" && Number.isFinite(event.metrics.confidence) ? event.metrics.confidence : null;

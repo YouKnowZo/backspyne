@@ -14,7 +14,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ClerkProvider, Show, useClerk } from '@clerk/react';
 import { Redirect, Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { ErrorBoundary } from './components/error-boundary';
-import { Sidebar, Topbar } from './components/console';
+import { DeviceDrawer, Sidebar, Topbar } from './components/console';
 import { Toaster } from './components/ui/toaster';
 import { TooltipProvider } from './components/ui/tooltip';
 import { ConsoleDataProvider, useConsoleData } from './lib/console-data';
@@ -22,10 +22,12 @@ import { basePath, clerkAppearance, clerkPubKey, clerkProxyUrl } from './lib/env
 import { VIEW_PATHS, viewFromPath, type NavView } from './lib/types';
 import NotFound from './pages/not-found';
 import { Billing } from './views/billing';
+import { Calibration } from './views/calibration';
 import { Dashboard } from './views/dashboard';
 import { Hardware } from './views/hardware';
 import { Ledger } from './views/ledger';
 import { Nodes } from './views/nodes';
+import { Admin } from './views/admin';
 import { AuthNotConfigured, HomeRedirect, Landing, LegalPage, SignInPage, SignUpPage } from './views/public';
 import { Sensing } from './views/sensing';
 
@@ -36,6 +38,7 @@ const VIEW_COMPONENTS: Record<NavView, () => JSX.Element> = {
   ledger: Ledger,
   sensing: Sensing,
   nodes: Nodes,
+  calibration: Calibration,
   hardware: Hardware,
   billing: Billing,
 };
@@ -72,6 +75,8 @@ function Console() {
         {View ? <View /> : <Redirect to={VIEW_PATHS.dashboard} />}
       </main>
     </div>
+    {/* One drawer for the whole console: every view selects a radio the same way. */}
+    <DeviceDrawer />
   </div>;
 }
 
@@ -97,6 +102,10 @@ function UserPortal() {
 function Router() {
   return <ErrorBoundary><Switch>
     <Route path="/legal" component={LegalPage} />
+    {/* The administrator surface is deliberately outside the operator portal and outside
+        Clerk: it is the deployment owner's own account, and it has to work on a deployment
+        where no identity provider is configured. */}
+    <Route path="/admin/*?" component={Admin} />
     <Route path="/" component={clerkPubKey ? HomeRedirect : Landing} />
     <Route path="/user-portal/*?" component={clerkPubKey ? UserPortal : AuthNotConfigured} />
     <Route path="/sign-in/*?" component={clerkPubKey ? SignInPage : AuthNotConfigured} />

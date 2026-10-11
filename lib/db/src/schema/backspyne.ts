@@ -48,6 +48,12 @@ export const scanNodes = pgTable("backspyne_scan_nodes", {
   status: nodeStatus("status").notNull().default("offline"),
   lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   capabilities: jsonb("capabilities").$type<string[]>().notNull().default([]),
+  // Operator-entered placement in the site frame: metres east and north of the origin the
+  // operator chose. Null means "not placed", which is a different state from "placed at
+  // 0,0" — an unplaced relay must never be treated as a vantage point at the origin.
+  positionX: real("position_x"),
+  positionY: real("position_y"),
+  positionLabel: text("position_label"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

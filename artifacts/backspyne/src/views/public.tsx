@@ -4,11 +4,13 @@
 // hero is a miniature of the actual deliverable — drawn with the same paper, rules, and scale
 // as the generated report — rather than a screenshot of the console.
 
-import { ChevronRight, Radio, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, ChevronRight, Radio, ShieldCheck } from 'lucide-react';
 import { Show, SignIn, SignUp } from '@clerk/react';
 import { Redirect } from 'wouter';
 
 import { Brand } from '../components/console';
+import { formatUsd, readPublicPlans, type PublicPlan, type PublicPlanCatalog } from '../lib/admin';
 import { basePath } from '../lib/env';
 
 /**
@@ -31,6 +33,59 @@ export function ReportSheetPreview() {
   </figure>;
 }
 
+/**
+ * What it costs, before anyone signs up.
+ *
+ * The catalog comes from the server, so the prices a visitor reads here are the prices the
+ * operator portal and the payment provider hold. The section is deliberately quiet about
+ * payments: it states the monthly price and the relay/history allowance each plan buys, and
+ * says plainly that a deployment without a configured provider cannot sell anything yet,
+ * rather than showing a purchase button that would fail.
+ */
+export function PricingSection() {
+  const [catalog, setCatalog] = useState<PublicPlanCatalog | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const next = await readPublicPlans();
+        if (!disposed) setCatalog(next);
+      } catch {
+        if (!disposed) setFailed(true);
+      }
+    })();
+    return () => { disposed = true; };
+  }, []);
+
+  const paidPlans: PublicPlan[] = catalog ? catalog.plans.filter(plan => plan.priceMonthlyUsd > 0) : [];
+
+  return <section className="pricing" id="pricing" data-testid="pricing">
+    <div className="pricing-head">
+      <div className="page-kicker">Plans</div>
+      <h2>Priced by how much site you cover.</h2>
+      <p>Every plan includes the same relay software, the same console, and the same report. A plan sets how many authorized relays you may pair, how far back the portal reads observation history, whether the CSV ledger can be exported, and whether the experimental CSI research panels appear. Billed monthly, cancel whenever you like.</p>
+    </div>
+    {failed && <p className="pricing-unavailable" data-testid="pricing-unavailable">Pricing is unavailable right now. Sign in to see the plans your account is entitled to.</p>}
+    {catalog && paidPlans.length === 0 && <p className="pricing-unavailable" data-testid="pricing-none">No paid plan is offered on this deployment yet. An account can still be created and used on the free allowance.</p>}
+    {paidPlans.length > 0 && <div className="pricing-grid" data-testid="pricing-grid">
+      {paidPlans.map(plan => <div className="pricing-card" key={plan.id} data-testid={`pricing-${plan.id}`}>
+        <div className="pricing-name">{plan.name}</div>
+        <div className="pricing-price">{formatUsd(plan.priceMonthlyUsd)}<small>/month</small></div>
+        <p className="pricing-tagline">{plan.tagline}</p>
+        <ul className="pricing-highlights">{plan.highlights.map(highlight => <li key={highlight}><Check size={12} aria-hidden="true" /><span>{highlight}</span></li>)}</ul>
+        <a className="btn btn-primary" href={`${basePath}/sign-up`}>Start with {plan.name} <ChevronRight size={13} aria-hidden="true" /></a>
+      </div>)}
+    </div>}
+    {catalog && <p className="pricing-note">
+      Prices are monthly US dollars and exclude any tax the payment provider collects. Plan limits are relay and history allowances,
+      not measurement guarantees: no plan discovers more devices, improves RSSI accuracy, or locates anything a scan cannot observe.
+      {catalog.configured ? '' : ' Checkout is not enabled on this deployment yet, so plans are listed as reference pricing rather than an active offer.'}
+    </p>}
+  </section>;
+}
+
 export function Landing() {
   const steps: Array<[string, string, string]> = [
     ['01', 'Pair a relay', 'One command on a machine that has the WiFi or Bluetooth adapter. The relay scans locally and reports signed measurements to your account.'],
@@ -50,6 +105,7 @@ export function Landing() {
       <ReportSheetPreview />
     </div>
     <ol className="landing-steps">{steps.map(([number, title, detail]) => <li key={number}><span>{number}</span><h2>{title}</h2><p>{detail}</p></li>)}</ol>
+    <PricingSection />
     <div className="landing-footer"><span>Authorized environments only. Scan where you hold permission.</span><span>© PaperBagExpress · BackSpyne</span><a href="/legal" className="legal-link">Legal &amp; privacy</a></div>
   </div></div>;
 }

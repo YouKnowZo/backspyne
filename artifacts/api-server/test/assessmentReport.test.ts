@@ -26,6 +26,7 @@ interface DeviceOverrides {
   security?: string | null;
   ssid?: string | null;
   signal?: number | null;
+  levelSource?: AssessmentDevice["levelSource"];
   addressMasked?: boolean;
 }
 
@@ -34,6 +35,7 @@ function device(overrides: DeviceOverrides = {}): AssessmentDevice {
   return {
     protocol: overrides.protocol ?? "WiFi",
     signal: overrides.signal === undefined ? -55 : overrides.signal,
+    levelSource: overrides.levelSource === undefined ? "adapter dBm" : overrides.levelSource,
     channel: overrides.channel === undefined ? "11" : overrides.channel,
     status: "active",
     vendor: null,
@@ -319,8 +321,46 @@ test("a complete signal set produces no sentence about missing levels", () => {
 
   assert.equal(assessment.signals.missing, 0);
   assert.equal(html.includes("reported no numeric level"), false);
+  // Every level here was measured, so no derived-level caveat may be attached to the document.
+  assert.equal(assessment.signals.derived, 0);
+  assert.equal(html.includes("link-quality percentage"), false);
   // The ruler carries its own scale, so a reader can read a value off the drawing.
   for (const tick of ["-30", "-50", "-70", "-90"]) {
     assert.ok(html.includes(`>${tick}</span>`), `expected the ruler scale to label ${tick} dBm`);
   }
+});
+
+test("a level derived from a link-quality percentage is counted, explained, and never hidden", () => {
+  // What a Windows WiFi observation looks like: the adapter reported 44% link quality, and the
+  // API derived -78 dBm from it. The level is used, so the assessment has to say where it came
+  // from instead of presenting it as measured power.
+  const devices = [
+    device({ signal: -78, levelSource: "link-quality percentage" }),
+    device({ signal: -61, protocol: "BLE", channel: null }),
+  ];
+  const assessment = buildAssessment({ devices, now: NOW });
+
+  assert.equal(assessment.signals.reported, 2);
+  assert.equal(assessment.signals.derived, 1);
+  // The derived level is part of the distribution rather than dropped from it.
+  assert.equal(assessment.signals.strongest, -61);
+  assert.equal(assessment.signals.weakest, -78);
+  const finding = assessment.findings.find((item) => item.id === "derived-levels");
+  assert.ok(finding, "a derived level must produce a finding");
+  assert.match(finding!.detail, /link-quality/i);
+  assert.ok(
+    assessment.limits.some((limit) => limit.includes("link-quality percentage")),
+    "a document containing a derived level must carry the limitation that goes with it",
+  );
+
+  const html = renderAssessmentReport(assessment, {
+    operatorName: "Licensed operator",
+    planName: "Solo",
+    trial: false,
+    generatedAt: new Date(NOW),
+    relays: [],
+    considered: devices.length,
+    siteLabel: "Sample site",
+  });
+  assert.ok(html.includes("link-quality percentage"), "the rendered document must state the limitation");
 });

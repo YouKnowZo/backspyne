@@ -2,7 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover lets the console use the full phone screen; the CSS then keeps its
+         controls clear of the notch and the home indicator with env(safe-area-inset-*). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>BackSpyne — wireless site assessment</title>
     <meta name="description" content="Measure the WiFi access points and Bluetooth advertisers around an authorized site, then hand over a printable, citable assessment. Scanning runs on your own hardware." />
     <meta name="robots" content="index, follow" />

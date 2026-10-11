@@ -14,7 +14,9 @@ CREATE TABLE backspyne_scan_nodes (
   id text PRIMARY KEY, owner_id text NOT NULL, name text NOT NULL,
   address text NOT NULL, role text NOT NULL,
   status backspyne_node_status NOT NULL DEFAULT 'offline', last_heartbeat_at timestamptz,
-  capabilities jsonb NOT NULL DEFAULT '[]'::jsonb, created_at timestamptz NOT NULL DEFAULT now()
+  capabilities jsonb NOT NULL DEFAULT '[]'::jsonb,
+  position_x real, position_y real, position_label text,
+  created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE backspyne_rf_devices (
   id text PRIMARY KEY, owner_id text NOT NULL, address text NOT NULL,
@@ -45,4 +47,10 @@ CREATE TABLE backspyne_sensing_snapshots (
   id text PRIMARY KEY, owner_id text NOT NULL, node_id text NOT NULL, observed_at timestamptz NOT NULL,
   metrics jsonb NOT NULL DEFAULT '{}'::jsonb, confidence real, uncertainty jsonb NOT NULL DEFAULT '{}'::jsonb
 );
+-- Placement columns for a database created before relay placement existed. The API adds
+-- these itself on first use (lib/locationSchema.ts); this block is the same upgrade for an
+-- operator who would rather run it by hand. A no-op on a new database.
+ALTER TABLE backspyne_scan_nodes ADD COLUMN IF NOT EXISTS position_x real;
+ALTER TABLE backspyne_scan_nodes ADD COLUMN IF NOT EXISTS position_y real;
+ALTER TABLE backspyne_scan_nodes ADD COLUMN IF NOT EXISTS position_label text;
 COMMIT;

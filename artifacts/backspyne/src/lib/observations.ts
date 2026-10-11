@@ -5,9 +5,12 @@
 // basis, a freshness window, and an address type cannot be spelled two ways in two views.
 // Pure functions only — no fetching, no React.
 
+// The relative specifiers carry their extension because this module is also loaded directly by a
+// Node test with type stripping, which resolves file paths rather than bundler targets; Vite and
+// `tsc` both accept the explicit form (see `allowImportingTsExtensions`).
 import type { AssessmentDevice } from '@workspace/assessment';
-import { liveText, timeAgo } from './format';
-import type { RFDevice, ScanNode } from './types';
+import { liveText, timeAgo } from './format.ts';
+import type { LevelSource, RFDevice, ScanNode } from './types.ts';
 
 /** Freshness windows: current within a minute, idle within five, else history. */
 export const ACTIVE_WINDOW_SECONDS = 60;
@@ -20,11 +23,19 @@ export function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
   const address = liveText(raw.address, '');
   if (!address) return null;
   const signalValue = raw.lastSignalDbm ?? raw.signalDbm;
-  const signal = typeof signalValue === 'number' && Number.isFinite(signalValue) ? signalValue : null;
   const metadata = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata as Record<string, unknown> : {};
   const sightingMetadata = raw.sightingMetadata && typeof raw.sightingMetadata === 'object' ? raw.sightingMetadata as Record<string, unknown> : {};
   const storedQuality = sightingMetadata.signalQualityPercent ?? metadata.signalQualityPercent;
   const quality = typeof storedQuality === 'number' && Number.isFinite(storedQuality) ? storedQuality : null;
+  // A level derived from the driver's link-quality percentage is a real input to the position
+  // model and is labelled everywhere it is shown. The API states the source; a stored row that
+  // predates that field is recognised by the percentage it carries, so an older observation is
+  // still shown as derived rather than as a measurement it never was.
+  const storedSource = sightingMetadata.signalSource ?? metadata.signalSource ?? (raw.signalSource as unknown);
+  const signalSource: LevelSource | null = storedSource === 'adapter dBm' || storedSource === 'link-quality percentage'
+    ? storedSource
+    : quality !== null && (typeof signalValue !== 'number' || !Number.isFinite(signalValue)) ? 'link-quality percentage' : null;
+  const signal = typeof signalValue === 'number' && Number.isFinite(signalValue) ? signalValue : null;
   const payload = raw.payload && typeof raw.payload === 'object' ? raw.payload as Record<string, unknown> :
     metadata.payload && typeof metadata.payload === 'object' ? metadata.payload as Record<string, unknown> : {};
   const protocol = raw.protocol === 'BLE' || payload.source === 'ble_adapter' ? 'BLE' : raw.protocol === 'WiFi' || payload.source === 'wifi_os_api' ? 'WiFi' : 'system';
@@ -64,6 +75,8 @@ export function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
     details: { ...payload, serviceUuids: raw.serviceUuids ?? metadata.serviceUuids ?? [] },
     signal,
     signalQualityPercent: quality,
+    signalSource,
+    signalDerived: signalSource === 'link-quality percentage',
     maxProximity: 'Not measured',
     status: ageSeconds <= ACTIVE_WINDOW_SECONDS ? 'active' : ageSeconds <= IDLE_WINDOW_SECONDS ? 'idle' : 'ghost',
     lastSeen: timeAgo(seenAt),
@@ -78,6 +91,10 @@ export function liveDeviceFromApi(raw: ApiDevice): RFDevice | null {
 
 export function liveNodeFromApi(raw: ApiNode): ScanNode {
   const heartbeat = liveText(raw.lastHeartbeatAt, '');
+  // A placement is only a placement when both coordinates are real numbers. A missing or
+  // malformed value becomes null — "not placed" — and never 0,0, which would silently put
+  // an unplaced relay at the operator's origin and skew every position estimate.
+  const coordinate = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null;
   return {
     id: liveText(raw.id, 'unknown-node'),
     name: liveText(raw.name, 'Authorized relay'),
@@ -87,7 +104,16 @@ export function liveNodeFromApi(raw: ApiNode): ScanNode {
     lastSeenTimestamp: typeof raw.lastHeartbeatAt === 'string' && Number.isFinite(new Date(raw.lastHeartbeatAt).getTime()) ? new Date(raw.lastHeartbeatAt).getTime() : null,
     devices: typeof raw.deviceCount === 'number' ? raw.deviceCount : 0,
     role: liveText(raw.role, 'Sensor relay'),
+    positionX: coordinate(raw.positionX),
+    positionY: coordinate(raw.positionY),
+    positionLabel: typeof raw.positionLabel === 'string' && raw.positionLabel.trim() ? raw.positionLabel : null,
   };
+}
+
+/** True only when a relay has both coordinates, which is what makes it a vantage point. */
+export function isPlaced(node: ScanNode): node is ScanNode & { positionX: number; positionY: number } {
+  return typeof node.positionX === 'number' && Number.isFinite(node.positionX)
+    && typeof node.positionY === 'number' && Number.isFinite(node.positionY);
 }
 
 /**
@@ -98,6 +124,7 @@ export function assessmentDeviceFrom(device: RFDevice): AssessmentDevice {
   return {
     protocol: device.protocol,
     signal: device.signal,
+    levelSource: device.signalSource,
     channel: device.channel && device.channel !== 'not reported' ? device.channel : null,
     status: device.status,
     vendor: device.vendor,

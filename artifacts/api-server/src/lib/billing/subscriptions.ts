@@ -9,7 +9,8 @@ import { db } from "@workspace/db";
 import { billingEvents, subscriptions, type Subscription } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "../logger";
-import { entitlementsFor, effectivePlanId, type PlanEntitlements, type PlanId } from "./plans";
+import { adminOwnerId } from "../adminAuth";
+import { entitlementsFor, effectivePlanId, isOwnerAccount, type PlanEntitlements, type PlanId } from "./plans";
 
 // Statement text mirrors lib/db/backspyne-billing.sql. One statement per call: the
 // driver uses the extended protocol, which rejects multi-statement queries.
@@ -113,10 +114,28 @@ export interface OwnerEntitlements {
 }
 
 /**
- * Effective plan for an operator. Falls back to the free plan when billing state
+ * Whether this owner id holds deployment-granted owner access. Two ways in: the
+ * `BACKSPYNE_OWNER_USER_IDS` allowlist, and the deployment administrator's own owner id
+ * (`BACKSPYNE_ADMIN_OWNER_ID`). The administrator cannot buy a plan — nobody can, owner
+ * access is not in the catalog — so their relays, history, and exports must not be capped by
+ * one they could never purchase.
+ */
+function holdsOwnerAccess(ownerId: string): boolean {
+  return isOwnerAccount(ownerId) || (Boolean(ownerId) && ownerId === adminOwnerId());
+}
+
+/**
+ * Effective plan for an operator. A configured owner is evaluated first and never falls
+ * back on a database read; everyone else falls back to the free plan when billing state
  * cannot be read, so a database or DDL problem can never grant paid limits.
  */
 export async function ownerEntitlements(ownerId: string): Promise<OwnerEntitlements> {
+  if (holdsOwnerAccess(ownerId)) {
+    const customerId = await readSubscription(ownerId)
+      .then((subscription) => subscription?.stripeCustomerId ?? null)
+      .catch(() => null);
+    return { planId: "owner", status: "owner", customerId, entitlements: entitlementsFor("owner") };
+  }
   try {
     const subscription = await readSubscription(ownerId);
     const status = subscription?.status ?? "inactive";

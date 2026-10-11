@@ -5,7 +5,11 @@
     "tsBuildInfoFile": ".tsbuildinfo",
     "outDir": "dist",
     "rootDir": "src",
-    "types": ["node"]
+    "types": ["node"],
+    // Pure modules that a Node test imports directly spell their relative imports with the
+    // .ts extension, because Node's ESM resolver does not guess extensions. This package is
+    // only ever type-checked with --noEmit; the bundle builds with esbuild.
+    "allowImportingTsExtensions": true
   },
   "include": ["src"],
   "references": [

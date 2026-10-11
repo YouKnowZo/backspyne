@@ -5,16 +5,20 @@
 // Topbar reads the signed-in operator's name — because those are properties of the shell, not
 // of the data layer.
 
+import { useEffect, useRef } from 'react';
 import {
-  Activity, Archive, Bluetooth, Check, CheckCircle2, CircleHelp, Cpu, CreditCard,
+  Activity, Archive, Bluetooth, Check, CheckCircle2, CircleHelp, Cpu, CreditCard, Crosshair,
   LayoutDashboard, LogOut, Menu, Minus, Network, Radar, Radio, RefreshCw, Search, Signal,
   Star, Wifi, X,
 } from 'lucide-react';
 import { Link } from 'wouter';
 import { useUser } from '@clerk/react';
 
+import { useConsoleData } from '../lib/console-data';
 import { ageSecondsFrom, ageText, evidenceTier, liveText, newestTimestamp } from '../lib/format';
 import { NAV_VIEWS, VIEW_PATHS, type ApiStatus, type NavView, type RFDevice, type ScanNode } from '../lib/types';
+import { BridgeDownload } from './bridge-download';
+import { DeviceLocationPanel } from './location';
 
 /** A radio, drawn as the kind of radio it is. Decorative: the row states the protocol. */
 export function AppIcon({ protocol, className = '' }: { protocol: RFDevice['protocol']; className?: string }) {
@@ -41,6 +45,7 @@ const NAV_ITEMS: Record<NavView, { label: string; icon: typeof Radio }> = {
   ledger: { label: 'Device ledger', icon: Archive },
   sensing: { label: 'Assessment', icon: Activity },
   nodes: { label: 'Relays', icon: Network },
+  calibration: { label: 'Calibration walk', icon: Crosshair },
   hardware: { label: 'Hardware', icon: Cpu },
   billing: { label: 'Plan & billing', icon: CreditCard },
 };
@@ -69,7 +74,7 @@ export function Sidebar({ view, mobileOpen, onClose, devices, nodes, liveMode, a
 
 export function Topbar({ view, scanning, apiStatus, onOpenMenu, sessionId, onSignOut }: { view: NavView; scanning: boolean; apiStatus: ApiStatus; onOpenMenu: () => void; sessionId: string | null; onSignOut: () => Promise<void> }) {
   const { user } = useUser();
-  const titles: Record<NavView, [string, string]> = { dashboard: ['Overview', 'Local radio environment'], ledger: ['Device ledger', 'Every radio observed from this account'], sensing: ['Assessment', 'Measured from relay observations only'], nodes: ['Relays', 'The scanners reporting for you'], hardware: ['Hardware', 'What this machine can measure'], billing: ['Plan and billing', 'Relays, history, and reporting'] };
+  const titles: Record<NavView, [string, string]> = { dashboard: ['Overview', 'Local radio environment'], ledger: ['Device ledger', 'Every radio observed from this account'], sensing: ['Assessment', 'Measured from relay observations only'], nodes: ['Relays', 'The scanners reporting for you'], calibration: ['Calibration walk', 'The site\u2019s own path-loss constants'], hardware: ['Hardware', 'What this machine can measure'], billing: ['Plan and billing', 'Relays, history, and reporting'] };
   const operatorName = user?.firstName || user?.primaryEmailAddress?.emailAddress || 'Operator';
   return <header className="topbar">
     <div className="topbar-context"><button className="menu-button" aria-label="Open navigation" data-testid="button-open-menu" onClick={onOpenMenu}><Menu size={20} aria-hidden="true" /></button><div className="context-line" /><div><div className="context-title">{titles[view][0]}</div><div className="context-sub">{titles[view][1]}</div></div></div>
@@ -177,10 +182,77 @@ export function DeviceDetails({ device }: { device: RFDevice }) {
  * One row per radio. The row itself is reachable and openable by keyboard, because selecting a
  * target is the console's most common action and it must not require a mouse.
  */
+/**
+ * The details drawer.
+ *
+ * Opening a radio used to append a panel below the page, which pushed everything the
+ * operator was reading out of view and made the page jump. It is now a side panel that the
+ * address bar, the row and the list all share: selecting a radio opens it, Escape or the
+ * close button dismisses it, and the page behind it never moves. It is deliberately not a
+ * modal dialog — the console behind it stays usable, so a radio can be read while the
+ * ledger, the map and the relay list are still on screen.
+ */
+export function DeviceDrawer() {
+  const { devices, selectedId, detailsOpen, closeDetails, trail } = useConsoleData();
+  const device = devices.find(item => item.id === selectedId);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  // Read during cleanup without making the effect depend on the selection: re-running it on
+  // every selection would record the drawer's own heading as the place to return to.
+  const lastSelectedId = useRef(selectedId);
+  lastSelectedId.current = selectedId;
+
+  useEffect(() => {
+    if (!detailsOpen) return;
+    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeButton.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDetails();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      // Focus goes back to the row that opened the panel, so a keyboard user is not dropped
+      // at the top of the page after closing it. When the opening element is gone — a
+      // re-sorted list, a different view — the row for the same radio is found by its own
+      // test id instead of leaving focus on the document.
+      const previous = returnFocus.current;
+      const target = previous && previous.isConnected
+        ? previous
+        : document.querySelector<HTMLElement>(`[data-testid="ledger-row-${lastSelectedId.current}"], [data-testid="row-device-${lastSelectedId.current}"]`);
+      target?.focus?.();
+    };
+  }, [detailsOpen, closeDetails]);
+
+  if (!detailsOpen || !device) return null;
+  const levels = trail.flatMap(sighting => typeof sighting.signalDbm === 'number' && Number.isFinite(sighting.signalDbm) ? [Math.abs(sighting.signalDbm)] : []);
+  return <div className="drawer-layer">
+    <aside className="device-drawer" role="dialog" aria-labelledby="device-drawer-title" data-testid="device-drawer">
+      <header className="drawer-head">
+        <div>
+          <div className="panel-title" id="device-drawer-title">Device details</div>
+          <div className="panel-subtitle">{device.vendor} · {device.deviceType} · {device.mac}</div>
+        </div>
+        <button ref={closeButton} className="icon-button" data-testid="button-close-details" aria-label="Close device details" onClick={closeDetails}><X aria-hidden="true" /></button>
+      </header>
+      <div className="drawer-body">
+        <section className="panel drawer-history">
+          <div className="panel-header"><div><div className="panel-title">Signal history</div><div className="panel-subtitle">{levels.length ? `${levels.length} reported sample${levels.length === 1 ? '' : 's'} for this radio` : 'No sighting history stored for this radio'}</div></div><Signal size={15} aria-hidden="true" style={{ color: 'hsl(var(--muted-foreground))' }} /></div>
+          <SignalChart values={[...levels].reverse()} emptyMessage="No sighting history for this radio yet. A relay stores one sighting per observation." />
+        </section>
+        <DeviceDetails device={device} />
+        <DeviceLocationPanel />
+      </div>
+    </aside>
+  </div>;
+}
+
 export function DeviceRows({ devices, selectedId, onSelect, onFavorite }: { devices: RFDevice[]; selectedId: string; onSelect: (id: string) => void; onFavorite: (id: string) => void }) {
   if (!devices.length) return <div className="empty-state"><Search size={23} aria-hidden="true" /><h3>No targets in this slice</h3><p>Try a different query or include ghost targets.</p></div>;
   return <><div className="list-head" aria-hidden="true"><span /><span>Target</span><span>Protocol</span><span>Signal</span><span>State</span><span /></div><div className="device-list">{devices.map(device => <div key={device.id} data-testid={`row-device-${device.id}`} role="button" tabIndex={0} aria-pressed={device.id === selectedId} className={`device-row ${device.id === selectedId ? 'selected' : ''}`} onClick={() => onSelect(device.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(device.id); } }}>
-    <div className="device-icon"><AppIcon protocol={device.protocol} /></div><div><div className="device-name">{device.vendor}</div><div className="device-mac">{device.deviceType} · {liveText(device.details.ssid, liveText(device.details.localName, liveText(device.details.name, device.mac)))}</div></div><div><div className="device-name" style={{ fontWeight: 500 }}>{device.protocol}</div><div className="device-meta">{device.channel}</div></div><div className="signal-cell">{device.signal === null ? '—' : `${device.signal} dBm`}{device.signalQualityPercent !== null && <span> {device.signalQualityPercent}%</span>}<span className="signal-bar">{device.signal !== null && <b style={{ width: `${Math.max(8, Math.min(100, 100 - (Math.abs(device.signal) - 35) * 1.65))}%` }} />}</span></div><div className={`state ${device.status}`}>{device.status}</div><button className="icon-button" aria-label={device.favorite ? 'Remove favorite' : 'Add favorite'} data-testid={`button-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} aria-hidden="true" /></button>
+    <div className="device-icon"><AppIcon protocol={device.protocol} /></div><div><div className="device-name">{device.vendor}</div><div className="device-mac">{device.deviceType} · {liveText(device.details.ssid, liveText(device.details.localName, liveText(device.details.name, device.mac)))}</div></div><div><div className="device-name" style={{ fontWeight: 500 }}>{device.protocol}</div><div className="device-meta">{device.channel}</div></div>{/* A level derived from a driver's link-quality percentage is marked, and the mark says why:
+         the position model uses it, so it must not look like something the adapter measured. */}
+      <div className="signal-cell">{device.signal === null ? '—' : <span className={device.signalDerived ? 'signal-derived' : undefined} title={device.signalDerived ? 'Derived from the driver\u2019s link-quality percentage, not measured power' : undefined}>{device.signalDerived ? '≈ ' : ''}{device.signal} dBm</span>}{device.signalQualityPercent !== null && <span> {device.signalQualityPercent}%</span>}<span className="signal-bar">{device.signal !== null && <b style={{ width: `${Math.max(8, Math.min(100, 100 - (Math.abs(device.signal) - 35) * 1.65))}%` }} />}</span></div><div className={`state ${device.status}`}>{device.status}</div><button className="icon-button" aria-label={device.favorite ? 'Remove favorite' : 'Add favorite'} data-testid={`button-favorite-${device.id}`} onClick={event => { event.stopPropagation(); onFavorite(device.id); }}><Star className={device.favorite ? 'star' : ''} aria-hidden="true" /></button>
   </div>)}</div></>;
 }
 
@@ -219,8 +291,13 @@ export function RelayChecklist({ nodes, devices, apiStatus }: { nodes: ScanNode[
 
 export function RelayGuide() {
   return <div className="checklist-guide">
-    <p>A browser cannot enumerate nearby Wi-Fi or Bluetooth radios, so BackSpyne collects through a relay you run yourself on a machine that has the adapter. Fill in <code>scanner/.env</code> once, then start it:</p>
-    <div className="checklist-commands"><code>Windows&nbsp;&nbsp;scanner\start.bat</code><code>macOS / Linux&nbsp;&nbsp;./scanner/start.sh</code></div>
+    <p>There are two ways to collect, and neither needs a repository:</p>
+    <ul className="checklist-options">
+      <li><strong>This device, no install.</strong> The <Link href={VIEW_PATHS.hardware}>Hardware</Link> view starts a relay in this browser: it reports position, movement, and — where the browser grants it — Bluetooth advertisers it heard. Walking a few metres while it runs gives the position maths several vantage points for the same radio.</li>
+      <li><strong>A machine with the adapters.</strong> WiFi access points are only visible to a local program, so the scanner runs beside the radio. Download it below and start it:</li>
+    </ul>
+    <div className="checklist-commands"><code>Windows&nbsp;&nbsp;start.bat</code><code>macOS / Linux&nbsp;&nbsp;./start.sh</code></div>
+    <BridgeDownload />
     <p>CSI sensing research additionally needs a compatible sensing engine plus CSI-capable hardware, reached through <code>BACKSPYNE_CSI_API_URL</code> and <code>BACKSPYNE_CSI_API_TOKEN</code>. Until that is connected this console stays measurement-only on purpose instead of inventing results.</p>
   </div>;
 }

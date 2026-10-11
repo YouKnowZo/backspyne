@@ -15,8 +15,14 @@ export type AssessmentProtocol = "WiFi" | "BLE" | "CSI" | "system";
 
 export interface AssessmentDevice {
   protocol: AssessmentProtocol | string;
-  /** Reported dBm, or null when the host adapter reported only a percentage. */
+  /**
+   * Level in dBm, or null when nothing usable was reported. A level derived from a
+   * link-quality percentage is a level: `levelSource` says which it is, and the assessment
+   * counts the two separately rather than treating a driver's scale as a measurement.
+   */
   signal: number | null;
+  /** `adapter dBm` for a measured level, `link-quality percentage` for a derived one. */
+  levelSource?: "adapter dBm" | "link-quality percentage" | null;
   channel: string | null;
   status: "active" | "idle" | "ghost" | string;
   /** Resolved vendor label, or null/"Unknown vendor" when unattributed. */
@@ -95,6 +101,12 @@ export interface AssessmentVendors {
 export interface AssessmentSignals {
   reported: number;
   missing: number;
+  /**
+   * How many of the reported levels came from a driver's 0-100 link-quality percentage rather
+   * than from measured power. They are included in the distribution because the position
+   * model uses them, and counted here so the report can say so.
+   */
+  derived: number;
   strongest: number | null;
   weakest: number | null;
   median: number | null;
@@ -125,6 +137,15 @@ export interface Assessment {
 }
 
 export const UNATTRIBUTED_VENDOR = "Unknown vendor";
+
+/**
+ * The limitation that applies only when the relay reported a link-quality percentage instead
+ * of power, which Windows WiFi and NetworkManager do. It is added to an assessment's limits
+ * only when such a level is actually in scope, so a report never carries a caveat about a
+ * method it did not use.
+ */
+export const DERIVED_LEVEL_LIMIT =
+  "Some levels in this assessment are a driver's link-quality percentage rather than measured power, mapped to decibels between -100 dBm at 0 percent and -50 dBm at 100 percent in half-decibel steps, saturating above -50 dBm. Those levels carry the driver's own rounding and scale error in addition to the usual uncertainty about walls, furniture, and antenna orientation.";
 export const BAND_24 = "2.4 GHz";
 export const BAND_5 = "5 GHz";
 export const BAND_UNKNOWN = "Unclassified";
@@ -261,13 +282,12 @@ export function buildAssessment(input: AssessmentInput): Assessment {
     .slice(0, 8)
     .map(([vendor, count]) => ({ vendor, count }));
 
-  const signals = devices
-    .map((device) => device.signal)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value))
-    .sort((left, right) => left - right);
+  const devicesWithLevels = devices.filter((device) => typeof device.signal === "number" && Number.isFinite(device.signal));
+  const signals = devicesWithLevels.map((device) => device.signal as number).sort((left, right) => left - right);
   const signalSummary: AssessmentSignals = {
     reported: signals.length,
     missing: devices.length - signals.length,
+    derived: devicesWithLevels.filter((device) => device.levelSource === "link-quality percentage").length,
     strongest: signals.length ? signals[signals.length - 1] : null,
     weakest: signals.length ? signals[0] : null,
     median: percentile(signals, 0.5),
@@ -308,7 +328,7 @@ export function buildAssessment(input: AssessmentInput): Assessment {
     vendors: { labelled, unknown: devices.length - labelled, masked, byBasis, top },
     signals: signalSummary,
     findings,
-    limits: ASSESSMENT_LIMITS,
+    limits: signalSummary.derived > 0 ? [...ASSESSMENT_LIMITS, DERIVED_LEVEL_LIMIT] : ASSESSMENT_LIMITS,
   };
 }
 
@@ -377,6 +397,15 @@ function buildFindings(input: FindingInput): AssessmentFinding[] {
       severity: "info",
       title: `${totals.ghost} of ${totals.devices} observations are no longer current`,
       detail: "These radios were seen earlier but not in the most recent scans. Treat the current column as the live picture and the older rows as history.",
+    });
+  }
+
+  if (signals.derived > 0) {
+    findings.push({
+      id: "derived-levels",
+      severity: "info",
+      title: `${signals.derived} of ${signals.reported} levels came from a link-quality percentage`,
+      detail: "This host adapter reports a 0-100 link-quality scale for WiFi instead of power. Those levels are mapped to decibels so position estimates can use them, which makes WiFi access points locatable from a Windows or NetworkManager relay; the mapping is a driver convention rather than a calibration, so a distance modelled from one is less certain than a distance modelled from a measured level.",
     });
   }
 

@@ -5,7 +5,8 @@
 // CSI research panels, which only appear when a compatible engine is connected and which are
 // labelled as research at every point where they could be mistaken for a measurement.
 
-import { CameraOff, CheckCircle2, CircleHelp, Gauge, Zap } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CameraOff, CheckCircle2, CircleHelp, Gauge, X, Zap } from 'lucide-react';
 
 import { MeasurementAssessment } from './dashboard';
 import { RelayChecklist } from '../components/console';
@@ -40,6 +41,74 @@ function sensingMetricsFromSnapshot(snapshot: SensingSnapshot | null): SensingMe
   return rows;
 }
 
+type GateState = 'ok' | 'blocked' | 'unknown';
+
+/**
+ * Why through-wall CSI research is, or is not, running.
+ *
+ * The honest answer to "the through-wall feature is not available" is a list of the four
+ * things it needs and which of them currently exist. Three of them are physical: an
+ * authorized relay that is reporting, a compatible CSI engine the bridge can reach, and a
+ * calibration the engine accepts. No console setting can supply any of them, so this panel
+ * states the gates and never offers a switch that would only produce a fake result.
+ */
+function CsiReadiness({ entitled, relayReporting, snapshot }: { entitled: boolean | null; relayReporting: boolean; snapshot: boolean }) {
+  const gate = (state: GateState, detail: string, label: string) => ({ state, detail, label });
+  const gates = [
+    gate(
+      entitled === null ? 'unknown' : entitled ? 'ok' : 'blocked',
+      entitled === null
+        ? 'The plan could not be read, so entitlement is unknown.'
+        : entitled
+          ? 'Experimental CSI research panels are enabled for this account.'
+          : 'The current plan does not include experimental CSI research panels. This is the only gate software can remove.',
+      'Plan entitlement',
+    ),
+    gate(
+      relayReporting ? 'ok' : 'blocked',
+      relayReporting
+        ? 'An authorized relay is reporting signed samples to this account.'
+        : 'No authorized relay has reported yet, so there is nothing to sense from.',
+      'Authorized relay reporting',
+    ),
+    gate(
+      relayReporting ? 'blocked' : 'unknown',
+      relayReporting
+        ? 'The bridge is reporting WiFi/BLE measurements only, so the live sensing engine at BACKSPYNE_CSI_API_URL is not configured, not reachable, or not publishing fresh frames. Through-wall sensing is produced by that engine and forwarded here; the console cannot switch it on.'
+        : 'The bridge has not reported yet, so engine state is unknown. Configure BACKSPYNE_CSI_API_URL and BACKSPYNE_CSI_API_TOKEN on the relay machine.',
+      'Live CSI sensing engine',
+    ),
+    gate(
+      'unknown',
+      'Room calibration is reported by the engine, never by this console. Until an engine publishes a calibration-bound result, this console abstains rather than estimating through walls.',
+      'Compatible CSI hardware and calibration',
+    ),
+  ];
+  const stateMark = (state: GateState) => state === 'ok'
+    ? <CheckCircle2 size={14} aria-hidden="true" />
+    : state === 'blocked' ? <X size={14} aria-hidden="true" /> : <CircleHelp size={14} aria-hidden="true" />;
+  const blocked = gates.filter(item => item.state === 'blocked').length;
+  return <section className="panel csi-readiness" data-testid="csi-readiness">
+    <div className="panel-header">
+      <div>
+        <div className="panel-title">Through-wall / CSI research</div>
+        <div className="panel-subtitle">Not running · {blocked} of {gates.length} gates closed{snapshot ? ' · last sample was measurement-only' : ' · no sample received'}</div>
+      </div>
+      <span className="hardware-status limited">{entitled ? 'NOT AVAILABLE' : 'NOT ENTITLED'}</span>
+    </div>
+    <div className="checklist-steps">{gates.map(item => <div className={`checklist-step ${item.state === 'ok' ? 'ok' : item.state === 'blocked' ? 'blocked' : 'warn'}`} key={item.label} data-testid={`csi-gate-${item.label.toLowerCase().replaceAll(' ', '-')}`}>
+      <span className="checklist-mark">{stateMark(item.state)}</span>
+      <div><strong>{item.label}</strong><span>{item.detail}</span></div>
+    </div>)}</div>
+    <p className="location-note">
+      Through-wall sensing is not a browser feature and cannot be enabled from this console. It requires CSI-capable
+      hardware, a running sensing engine the relay can authenticate to, and a calibration that engine accepts; when any
+      of those is missing there is no result, and this console shows none rather than generating one. Entitlement is the
+      only gate it can lift, and it lifts it for the account, not for the physics.
+    </p>
+  </section>;
+}
+
 function Sensing() {
   const { liveMode, sensingSnapshot, apiConnected, devices, nodes, apiStatus } = useConsoleData();
   const snapshot = sensingSnapshot;
@@ -60,8 +129,27 @@ function Sensing() {
   const evidenceCount = rawCalibratedEvidence?.person_count;
   const calibratedEvidence = rawCalibratedEvidence?.schema === 'backspyne.calibrated-presence-evidence.v2' && typeof evidenceCount === 'number' && Number.isInteger(evidenceCount) && evidenceCount >= 0 && evidenceCount <= 255 && typeof rawCalibratedEvidence.presence === 'boolean' && rawCalibratedEvidence.presence === (evidenceCount > 0) && Array.isArray(rawCalibratedEvidence.source_node_ids) ? rawCalibratedEvidence : null;
   const poseKeypoints = Array.isArray(snapshotMetrics.poseKeypoints) ? snapshotMetrics.poseKeypoints : [];
+  // The plan gate is read from the server's own catalog, so this panel states entitlement
+  // rather than assuming it. A plan that cannot be read is reported as unknown, never as
+  // entitled.
+  const [csiEntitled, setCsiEntitled] = useState<boolean | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/billing/catalog', { credentials: 'include' });
+        if (!response.ok || disposed) return;
+        const payload = await response.json() as { entitlements?: { csiResearch?: boolean } };
+        if (!disposed) setCsiEntitled(payload.entitlements?.csiResearch === true);
+      } catch {
+        // An unreadable plan stays unknown; it never becomes an entitlement.
+      }
+    })();
+    return () => { disposed = true; };
+  }, []);
   return <><div className="page-heading"><div><div className="page-kicker">Assessment and sensing</div><h1>What the relay measured.</h1><p>CSI-enabled research mode is available through a compatible, authenticated local sensing engine. Standard WiFi access-point/BLE scans remain descriptive measurements only.</p></div><div className={`status-pill ${liveMode ? '' : 'paused'}`}><span className="pulse-dot" />{liveMode ? 'RELAY REPORTING' : 'AWAITING MEASUREMENTS'}</div></div>
     <div className={`signal-banner ${csiActive ? 'research-banner' : ''}`}><CameraOff /><span><strong>{csiActive ? 'Experimental research output.' : 'Measurement-only mode.'}</strong> {csiActive ? 'CSI measurements and model outputs below are sourced from the authenticated live engine and are research-only. No safety, clinical, identity, or emergency interpretation.' : apiConnected ? (snapshot ? 'The latest signed local-node sample has WiFi/BLE measurements; configure compatible CSI hardware to enable WiFi sensing research.' : 'The API is connected, but no sensing sample has arrived yet.') : 'Connect to the operator API to load sensing telemetry.'} No images or audio are used.</span><CircleHelp size={14} style={{ marginLeft: 'auto' }} /></div>
+    {!csiActive && <CsiReadiness entitled={csiEntitled} relayReporting={liveMode || Boolean(snapshot)} snapshot={Boolean(snapshot)} />}
     <RelayChecklist nodes={nodes} devices={devices} apiStatus={apiStatus} />
     <div className="assessment-heading"><div className="eyebrow">Measured assessment</div><p>Built only from observations the relay actually reported. Nothing here is inferred about people, and a section that has no data says so instead of showing a zero.</p></div>
     <MeasurementAssessment />

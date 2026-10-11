@@ -726,3 +726,369 @@ h1, .page-heading h1, .panel-title, .landing-copy h1 { text-wrap: balance; }
 .share-report-status { margin: 0; flex: 1 1 320px; min-width: 0; font: 11.5px/1.55 var(--app-font-mono); color: hsl(var(--muted-foreground)); }
 .share-report-url { flex: 1 1 100%; min-width: 0; border: 1px solid hsl(var(--input)); background: hsl(var(--card)); border-radius: 2px; padding: 8px 10px; font: 11px var(--app-font-mono); color: hsl(var(--foreground)); }
 .share-report-url:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }
+
+/* ==========================================================================
+   Device drawer, site map, relay placement, and scan results
+   ========================================================================== */
+
+/* The details drawer. Opening a radio used to append a panel to the bottom of the page,
+   which pushed whatever the operator was reading out of view. This is a side panel instead:
+   the console behind it stays usable, so the ledger, the map and the relay list remain
+   readable while one radio is open. */
+/* The layer only positions the panel: `pointer-events: none` lets every click reach the page
+   behind it, so the drawer is a panel beside the console rather than a modal over it. The
+   panel itself takes events back, and Escape, the close button or the row that opened it
+   all dismiss it. */
+.drawer-layer { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end; pointer-events: none; }
+.device-drawer { pointer-events: auto; }
+.device-drawer {
+  position: relative; display: flex; flex-direction: column; width: min(460px, 100vw); max-width: 100%;
+  height: 100%; overflow-y: auto; background: hsl(var(--background));
+  border-left: 1px solid hsl(var(--border)); box-shadow: -26px 0 60px hsl(189 28% 9% / .32);
+  animation: drawer-in .18s ease-out;
+}
+@keyframes drawer-in { from { transform: translateX(22px); opacity: .65; } to { transform: translateX(0); opacity: 1; } }
+.drawer-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px; background: hsl(var(--card)); border-bottom: 1px solid hsl(var(--border)); }
+.drawer-head .panel-title { font-size: 14px; }
+.drawer-body { display: grid; gap: 13px; align-content: start; padding: 13px 16px 30px; }
+.drawer-body .device-details, .drawer-body .location-panel { margin-top: 0; }
+.drawer-body .device-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.drawer-body .device-details-note { max-width: none; }
+
+/* Scan results: an explicit check has to leave something behind, including when nothing
+   changed, otherwise the button reads as broken. */
+.scan-result { margin-bottom: 12px; padding: 12px 14px; border: 1px solid hsl(var(--border)); border-left: 3px solid hsl(var(--primary)); background: hsl(var(--card)); color: hsl(var(--muted-foreground)); font: 11.5px/1.6 var(--app-font-mono); }
+.scan-result strong { color: hsl(var(--foreground)); }
+
+/* The site map. Fixed square geometry, so a click maps to one metre coordinate exactly and
+   a marker cannot be read as being somewhere the maths did not put it. */
+.site-map-wrap { padding: 14px 16px 0; }
+.site-map { display: block; width: 100%; max-width: 520px; aspect-ratio: 1 / 1; margin: 0 auto; background: hsl(var(--muted)); border: 1px solid hsl(var(--border)); }
+.site-map.placing { cursor: crosshair; border-color: hsl(var(--primary)); }
+.map-grid { stroke: hsl(var(--border)); stroke-width: .25; }
+.map-axis { stroke: hsl(var(--muted-foreground)); stroke-width: .35; stroke-dasharray: 2 1.5; opacity: .7; }
+.map-relay rect { fill: hsl(var(--card)); stroke: hsl(var(--muted-foreground)); stroke-width: .7; }
+.map-relay.online rect { stroke: hsl(var(--primary)); }
+.map-relay.selected rect { fill: hsl(var(--primary)); stroke: hsl(var(--primary)); }
+.map-relay text, .map-candidate text { fill: hsl(var(--foreground)); font: 2.7px var(--app-font-mono); }
+.map-ring { fill: none; stroke: hsl(var(--accent)); stroke-width: .5; stroke-dasharray: 2 1.6; }
+.map-uncertainty { fill: hsl(176 73% 22% / .1); stroke: hsl(var(--primary)); stroke-width: .4; stroke-dasharray: 1.4 1.2; }
+.map-estimate { fill: hsl(var(--primary)); }
+.map-candidate circle { fill: none; stroke: hsl(var(--accent)); stroke-width: .7; }
+.map-candidate text { fill: hsl(var(--accent)); }
+.map-track { fill: none; stroke: hsl(var(--primary)); stroke-width: .6; opacity: .8; }
+.map-track-dot { fill: hsl(var(--card)); stroke: hsl(var(--primary)); stroke-width: .35; }
+.site-map-caption { margin: 10px 0 0; color: hsl(var(--muted-foreground)); font: 10.5px/1.55 var(--app-font-mono); }
+.site-map-caption a { color: hsl(var(--primary)); }
+
+/* Position estimate. Every readout sits next to the model that produced it. */
+.location-panel { margin-top: 11px; }
+.location-panel .location-note { margin-top: 11px; }
+.location-note { margin: 0; padding: 12px 16px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.62; }
+.location-note a { color: hsl(var(--primary)); }
+.location-table { border-top: 1px solid hsl(var(--border)); }
+.location-table .list-head, .location-row { display: grid; grid-template-columns: minmax(90px, 1.5fr) repeat(4, minmax(58px, 1fr)); align-items: center; gap: 8px; }
+.location-row { padding: 9px 16px; border-bottom: 1px solid hsl(var(--border)); font: 11.5px var(--app-font-mono); }
+.location-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.location-relays { border-top: 1px solid hsl(var(--border)); }
+.location-relay { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 16px; border-bottom: 1px solid hsl(var(--border)); }
+.location-relay-name { font-size: 12.5px; font-weight: 600; }
+.location-relay-meta { color: hsl(var(--muted-foreground)); font: 11px var(--app-font-mono); }
+.location-relay .hardware-status { margin-left: auto; }
+.location-disclaimer { margin: 0; padding: 12px 16px 14px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 11.5px; line-height: 1.62; }
+
+/* Relay placement. */
+.relay-placement { margin-top: 11px; }
+.node-placement { margin-top: 10px; padding-top: 9px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font: 10px var(--app-font-mono); }
+.relay-placement-picker { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 16px 0; }
+.relay-chip { display: grid; gap: 4px; min-width: 132px; text-align: left; background: hsl(var(--card)); border: 1px solid hsl(var(--border)); padding: 8px 10px; cursor: pointer; }
+.relay-chip:hover { border-color: hsl(var(--primary)); }
+.relay-chip.selected { border-color: hsl(var(--primary)); background: hsl(176 73% 22% / .07); }
+.relay-chip.placed .relay-chip-state { color: hsl(var(--primary)); }
+.relay-chip-name { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.relay-chip-state { color: hsl(var(--muted-foreground)); font: 10px var(--app-font-mono); }
+.relay-placement-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 16px; border-top: 1px solid hsl(var(--border)); }
+.relay-placement-form .field { display: grid; gap: 6px; }
+.relay-placement-form label { color: hsl(var(--muted-foreground)); font: 10px var(--app-font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.relay-placement-form input { border: 1px solid hsl(var(--input)); background: hsl(var(--card)); border-radius: 2px; padding: 9px 10px; font: 12px var(--app-font-mono); width: 100%; }
+.relay-placement-form input:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }
+.relay-placement-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* Through-wall research readiness. */
+.csi-readiness { margin-top: 11px; }
+.csi-readiness .checklist-steps { margin-top: 0; }
+
+@media (max-width: 700px) {
+  .device-drawer { width: 100%; }
+  .drawer-body { padding: 12px 13px 30px; }
+  .location-table .list-head, .location-row { grid-template-columns: minmax(78px, 1.3fr) repeat(2, minmax(52px, 1fr)); }
+  .location-table .list-head > :nth-child(4), .location-row > :nth-child(4),
+  .location-table .list-head > :nth-child(5), .location-row > :nth-child(5) { display: none; }
+  .relay-placement-form { grid-template-columns: 1fr; }
+}
+
+
+/* ==========================================================================
+   Phone relay and the hosted bridge download
+   ========================================================================== */
+
+/* The panel someone uses while standing in a corridor: one action, the state of every
+   sensor, and what was actually sent. */
+.phone-relay { margin-bottom: 11px; }
+.phone-relay-body { padding: 14px 16px 16px; display: grid; gap: 14px; }
+.phone-relay-intro { margin: 0; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.62; max-width: 82ch; }
+.phone-relay-controls { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 12px; align-items: end; }
+.phone-relay-controls .field { display: grid; gap: 6px; }
+.phone-relay-controls label { color: hsl(var(--muted-foreground)); font: 10px var(--app-font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.phone-relay-controls input, .phone-relay-controls select {
+  border: 1px solid hsl(var(--input)); background: hsl(var(--card)); border-radius: 2px;
+  padding: 10px 11px; font: 13px var(--app-font-mono); width: 100%; min-height: 44px;
+}
+.phone-relay-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px; }
+.phone-relay-readouts {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+  border-top: 1px solid hsl(var(--border)); border-bottom: 1px solid hsl(var(--border));
+}
+.phone-relay-readout { padding: 12px 0 13px; min-width: 0; }
+.phone-relay-readout strong { display: block; margin-top: 7px; font: 600 16px/1.15 var(--app-font-display); letter-spacing: -.01em; overflow-wrap: anywhere; }
+.phone-relay-readout small { display: block; margin-top: 6px; color: hsl(var(--muted-foreground)); font: 10px/1.5 var(--app-font-mono); overflow-wrap: anywhere; }
+.phone-relay-sensors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: hsl(var(--border)); border: 1px solid hsl(var(--border)); }
+.phone-relay-sensor { background: hsl(var(--card)); padding: 12px 13px; display: flex; gap: 10px; }
+.phone-relay-sensor-icon { color: hsl(var(--muted-foreground)); flex: none; margin-top: 2px; }
+.phone-relay-sensor-icon svg { width: 15px; height: 15px; }
+.phone-relay-sensor.available .phone-relay-sensor-icon { color: hsl(var(--primary)); }
+.phone-relay-sensor-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; flex-wrap: wrap; }
+.phone-relay-sensor-top strong { font-size: 12.5px; }
+.phone-relay-sensor p { margin: 6px 0 0; color: hsl(var(--muted-foreground)); font-size: 11.5px; line-height: 1.55; }
+.phone-relay-idle { grid-column: 1 / -1; margin: 0; padding: 14px 13px; background: hsl(var(--card)); color: hsl(var(--muted-foreground)); font-size: 12.5px; }
+.phone-relay-origin { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid hsl(var(--border)); padding-top: 13px; }
+.phone-relay-origin p { margin: 6px 0 0; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.55; max-width: 62ch; }
+.phone-relay-origin .phone-relay-actions { grid-column: auto; }
+.phone-relay-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; font: 11px/1.5 var(--app-font-mono); color: hsl(var(--muted-foreground)); }
+.phone-relay-log li { display: flex; gap: 8px; align-items: flex-start; overflow-wrap: anywhere; }
+.phone-relay-log li.error { color: hsl(var(--accent)); }
+.phone-relay-log li.sent .mono { color: hsl(var(--primary)); }
+.phone-relay-note { margin: 0; display: flex; gap: 7px; align-items: flex-start; color: hsl(var(--muted-foreground)); font-size: 11.5px; line-height: 1.6; }
+.phone-relay-note svg { flex: none; margin-top: 3px; color: hsl(var(--primary)); }
+
+/* The download: what it is, what is inside it, and one button. */
+.bridge-download { border: 1px solid hsl(var(--border)); background: hsl(var(--card)); margin-top: 12px; }
+.bridge-download-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 13px 14px; }
+.bridge-download-icon { width: 30px; height: 30px; border: 1px solid hsl(var(--border)); display: grid; place-items: center; color: hsl(var(--primary)); flex: none; }
+.bridge-download-icon svg { width: 15px; height: 15px; }
+.bridge-download-head > div { flex: 1 1 260px; min-width: 0; }
+.bridge-download-head strong { font-size: 13px; }
+.bridge-download-head p { margin: 5px 0 0; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.55; }
+.bridge-download-list { border-top: 1px solid hsl(var(--border)); padding: 11px 14px 13px; }
+.bridge-download-list summary { color: hsl(var(--muted-foreground)); font: 11px var(--app-font-mono); cursor: pointer; }
+.bridge-download-list ul { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.bridge-download-list li { display: flex; justify-content: space-between; gap: 12px; color: hsl(var(--muted-foreground)); font: 10.5px var(--app-font-mono); overflow-wrap: anywhere; }
+.bridge-download-list p { margin: 8px 0 0; color: hsl(var(--muted-foreground)); font-size: 10.5px; }
+.bridge-download-note { margin: 0; padding: 10px 14px; border-top: 1px solid hsl(var(--border)); display: flex; gap: 7px; align-items: flex-start; color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.55; }
+.bridge-download-note svg { flex: none; margin-top: 2px; color: hsl(var(--primary)); }
+.checklist-options { margin: 0; padding-left: 18px; display: grid; gap: 8px; }
+.checklist-options li { line-height: 1.6; }
+.checklist-options strong { color: hsl(var(--foreground)); }
+
+/* ==========================================================================
+   Phones: a viewport you hold, one thumb, and a sheet instead of a side panel
+   ========================================================================== */
+@media (max-width: 700px) {
+  /* The details drawer becomes a bottom sheet: on a phone a 460 px side panel would leave
+     no room for the ledger it is describing, and the bottom of the screen is where a thumb
+     already is. */
+  .drawer-layer { align-items: flex-end; }
+  .device-drawer {
+    width: 100%; height: auto; max-height: 82dvh; border-left: 0;
+    border-top: 2px solid hsl(var(--primary));
+    box-shadow: 0 -20px 50px hsl(189 28% 9% / .34);
+    animation: sheet-in .2s ease-out;
+  }
+  .drawer-head { padding: 12px 13px; }
+  .drawer-head::before {
+    content: ''; position: absolute; top: 5px; left: 50%; transform: translateX(-50%);
+    width: 42px; height: 3px; background: hsl(var(--border));
+  }
+  .drawer-body { padding-bottom: calc(28px + env(safe-area-inset-bottom, 0px)); }
+  /* A notched phone: keep the chrome clear of the cutout and the home indicator. */
+  .topbar { padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
+  .content {
+    padding-left: calc(13px + env(safe-area-inset-left, 0px));
+    padding-right: calc(13px + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(34px + env(safe-area-inset-bottom, 0px));
+  }
+  .sidebar { padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+  @keyframes sheet-in { from { transform: translateY(26px); opacity: .7; } to { transform: translateY(0); opacity: 1; } }
+
+  /* Comfortable targets: at least 44 px of height for anything that is pressed. */
+  .btn { min-height: 44px; }
+  .icon-button { min-width: 44px; min-height: 44px; }
+  .nav-button { padding: 12px 10px; }
+  .relay-chip { min-height: 52px; }
+  .relay-chip .relay-chip-state { font-size: 10.5px; }
+  .search-input, .select-filter, .field input, .field select, .toolbar select { min-height: 44px; }
+  /* 16 px inputs stop mobile Safari zooming the whole page on focus. */
+  .field input, .field select, .phone-relay-controls input, .phone-relay-controls select { font-size: 16px; }
+  .share-report-url { font-size: 12px; }
+
+  /* Readouts that were ruled into four columns get two, because four columns of figures at
+     this width are four columns of truncation. */
+  .phone-relay-readouts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .phone-relay-sensors { grid-template-columns: 1fr; }
+  .phone-relay-controls { grid-template-columns: 1fr; }
+  .phone-relay-origin { flex-direction: column; align-items: flex-start; }
+  .phone-relay-origin .phone-relay-actions { width: 100%; }
+  .phone-relay-origin .phone-relay-actions .btn { flex: 1 1 46%; }
+  .bridge-download-head > div { flex-basis: 100%; }
+  .bridge-download-head .btn { width: 100%; }
+
+  /* The map is the instrument: give it the full width and make its marks reachable. */
+  .site-map { max-width: none; }
+  .map-relay rect { stroke-width: 1; }
+  .relay-placement-picker { padding: 12px 13px 0; }
+  .relay-chip { min-width: 0; flex: 1 1 44%; }
+  .location-grid .device-detail strong { font-size: 12px; }
+  .phone-relay-log li { font-size: 10.5px; }
+}
+
+@media (max-width: 420px) {
+  .phone-relay-readouts { grid-template-columns: 1fr; }
+  .phone-relay-origin .phone-relay-actions .btn { flex: 1 1 100%; }
+}
+
+
+/* ==========================================================================
+   Calibration walk
+   ========================================================================== */
+
+/* The places a walk recorded, drawn as ground the phone actually covered. Dashed and hollow,
+   so a walked place is never mistaken for a placed relay or an estimated position. */
+.map-walk-dot { fill: none; stroke: hsl(var(--accent)); stroke-width: .5; stroke-dasharray: 1.2 1.1; }
+
+/* Three columns, because this table compares two models and not five relay readings. */
+.calibration-comparison .list-head, .calibration-comparison .location-row { grid-template-columns: minmax(88px, 1.4fr) repeat(2, minmax(76px, 1fr)); }
+.calibration-shift { color: hsl(var(--primary)); font-weight: 600; }
+
+.calibration-walk { margin-top: 11px; }
+.calibration-howto { margin: 0; padding: 16px 16px 4px 34px; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.65; }
+.calibration-howto li { margin-bottom: 7px; }
+.calibration-howto strong { color: hsl(var(--foreground)); }
+.calibration-howto a { color: hsl(var(--primary)); }
+.calibration-windows { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px 14px; }
+.calibration-windows .relay-chip { min-width: 0; }
+
+.calibration-candidates { display: grid; gap: 12px; padding: 0 16px 14px; }
+.calibration-select { border: 1px solid hsl(var(--border)); border-radius: 2px; }
+.calibration-select.selected { border-color: hsl(var(--primary)); }
+.calibration-select-box { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font: 10px var(--app-font-mono); text-transform: uppercase; letter-spacing: .08em; cursor: pointer; }
+.calibration-select-box input { width: 16px; height: 16px; accent-color: hsl(var(--primary)); cursor: pointer; }
+.calibration-candidate { padding: 0 0 12px; }
+.calibration-candidate-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; padding: 13px 13px 11px; }
+.calibration-candidate-name { font: 600 14px/1.25 var(--app-font-display); letter-spacing: -.01em; }
+.calibration-candidate-meta { margin-top: 5px; color: hsl(var(--muted-foreground)); font: 11px/1.5 var(--app-font-mono); overflow-wrap: anywhere; }
+.calibration-candidate .checklist-steps { margin: 0 13px 10px; }
+.calibration-candidate-actions { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 13px; }
+.calibration-reasons { list-style: none; margin: 0; padding: 12px 16px; border-top: 1px solid hsl(var(--border)); display: grid; gap: 7px; color: hsl(var(--accent)); font-size: 12px; line-height: 1.6; }
+.calibration-reasons li { display: flex; gap: 8px; }
+.calibration-reasons li::before { content: '—'; flex: none; }
+.calibration-candidate .calibration-reasons { margin: 0 13px 10px; padding: 10px 0 0; }
+.calibration-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 14px 16px; border-top: 1px solid hsl(var(--border)); }
+.calibration-action-note { color: hsl(var(--muted-foreground)); font-size: 11.5px; line-height: 1.55; max-width: 70ch; }
+.calibration-prose { margin: 9px 0 0; font-size: 12.5px; line-height: 1.6; color: hsl(var(--muted-foreground)); }
+
+@media (max-width: 700px) {
+  .calibration-comparison .list-head, .calibration-comparison .location-row { grid-template-columns: minmax(82px, 1.2fr) repeat(2, minmax(66px, 1fr)); }
+  .calibration-candidates { padding: 0 13px 13px; }
+  .calibration-actions .btn { flex: 1 1 46%; }
+  .calibration-candidate-actions .btn { width: 100%; }
+  .calibration-select-box { min-height: 44px; }
+}
+
+
+/* ==========================================================================
+   Administration and pricing
+   ========================================================================== */
+
+/* The deployment's own books, and the plans a visitor can buy. Both read the server's
+   figures, so both are laid out around figures rather than around decoration. */
+.admin-shell { min-height: 100vh; background: hsl(var(--background)); }
+.admin-inner { max-width: 1180px; margin: 0 auto; padding: 20px 20px 46px; display: grid; gap: 14px; }
+.admin-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid hsl(var(--border)); }
+.admin-top-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.admin-heading h1 { margin: 7px 0 0; font: 700 27px/1.15 var(--app-font-display); letter-spacing: -.02em; }
+.admin-heading p { margin: 10px 0 0; max-width: 82ch; color: hsl(var(--muted-foreground)); font-size: 13px; line-height: 1.65; }
+.admin-card { border: 1px solid hsl(var(--border)); }
+.admin-loading { display: flex; align-items: center; gap: 10px; padding: 16px; color: hsl(var(--muted-foreground)); font-size: 12.5px; }
+.admin-note { margin: 0; padding: 13px 16px; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.62; }
+.admin-note code { font: 11.5px var(--app-font-mono); color: hsl(var(--foreground)); }
+
+.admin-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 16px; }
+.admin-form .field { display: grid; gap: 6px; }
+.admin-form label { color: hsl(var(--muted-foreground)); font: 10px var(--app-font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.admin-form input { border: 1px solid hsl(var(--input)); background: hsl(var(--card)); border-radius: 2px; padding: 10px 11px; font: 13px var(--app-font-mono); width: 100%; }
+.admin-form input:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 1px; }
+.admin-form-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.admin-form-actions .admin-note { padding: 0; }
+.admin-session code { font: 11.5px var(--app-font-mono); }
+
+.admin-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: hsl(var(--border)); border: 1px solid hsl(var(--border)); }
+.admin-tile { background: hsl(var(--card)); padding: 15px 14px 16px; min-width: 0; }
+.admin-tile strong { display: block; margin-top: 8px; font: 600 24px/1.1 var(--app-font-display); letter-spacing: -.02em; }
+.admin-tile small { display: block; margin-top: 7px; color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.5; }
+
+.admin-mix { display: grid; gap: 14px; padding: 16px; }
+.admin-mix-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+.admin-mix-name { font: 600 13.5px var(--app-font-display); }
+.admin-mix-figure { color: hsl(var(--muted-foreground)); font: 11.5px var(--app-font-mono); }
+.admin-mix-track { display: block; height: 9px; margin: 8px 0 6px; background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); }
+.admin-mix-track b { display: block; height: 100%; background: hsl(var(--primary)); }
+.admin-mix-share { display: block; color: hsl(var(--muted-foreground)); font: 10.5px var(--app-font-mono); }
+
+.admin-usage { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: hsl(var(--border)); border-bottom: 1px solid hsl(var(--border)); }
+.admin-usage-cell { background: hsl(var(--card)); padding: 13px 14px 14px; min-width: 0; }
+.admin-usage-cell strong { display: block; margin-top: 7px; font: 600 19px/1.1 var(--app-font-display); }
+
+.admin-recent .list-head, .admin-recent .location-row { grid-template-columns: minmax(120px, 1.6fr) minmax(70px, .8fr) minmax(70px, .8fr) minmax(120px, 1.2fr); }
+.admin-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 14px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 11.5px; }
+
+.pricing { padding: 34px 0 26px; border-top: 1px solid hsl(var(--border)); margin-top: 30px; }
+.pricing-head { max-width: 78ch; }
+.pricing-head h2 { margin: 8px 0 0; font: 700 24px/1.2 var(--app-font-display); letter-spacing: -.02em; }
+.pricing-head p { margin: 11px 0 0; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.65; }
+.pricing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: hsl(var(--border)); border: 1px solid hsl(var(--border)); margin-top: 22px; }
+.pricing-card { background: hsl(var(--card)); padding: 18px 17px 20px; display: grid; align-content: start; gap: 11px; }
+.pricing-name { font: 600 15px/1.2 var(--app-font-display); letter-spacing: -.01em; }
+.pricing-price { font: 600 27px/1.1 var(--app-font-display); letter-spacing: -.02em; }
+.pricing-price small { margin-left: 5px; color: hsl(var(--muted-foreground)); font: 11.5px var(--app-font-mono); letter-spacing: 0; }
+.pricing-tagline { margin: 0; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.6; }
+.pricing-highlights { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.pricing-highlights li { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.5; }
+.pricing-highlights svg { color: hsl(var(--primary)); flex: none; margin-top: 3px; }
+.pricing-card .btn { justify-content: center; }
+.pricing-note { margin: 16px 0 0; color: hsl(var(--muted-foreground)); font-size: 11.5px; line-height: 1.62; max-width: 88ch; }
+.pricing-unavailable { margin: 18px 0 0; padding: 13px 14px; border: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.6; }
+
+@media (max-width: 700px) {
+  .admin-inner { padding: 14px 13px 34px; }
+  .admin-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-usage { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-form { grid-template-columns: 1fr; }
+  .admin-recent .list-head, .admin-recent .location-row { grid-template-columns: minmax(104px, 1.4fr) minmax(60px, .8fr) minmax(60px, .8fr); }
+  .admin-recent .list-head > :nth-child(4), .admin-recent .location-row > :nth-child(4) { display: none; }
+  .admin-top-actions .btn { flex: 1 1 auto; }
+  .admin-form input { min-height: 44px; font-size: 16px; }
+  .pricing-grid { grid-template-columns: 1fr; }
+  .pricing { padding: 24px 0 18px; }
+  .pricing-card .btn { min-height: 44px; }
+}
+
+@media (max-width: 420px) {
+  .admin-tiles { grid-template-columns: 1fr; }
+  .admin-top-actions .btn { flex: 1 1 100%; }
+}
+
+/* A level the driver reported as a percentage rather than as power. The marker is the whole
+   point: the position model uses this level, and it must not read as a measurement. */
+.signal-derived { color: hsl(var(--accent)); cursor: help; border-bottom: 1px dotted hsl(var(--accent)); }
+.plan-upsell { border-top: 1px solid hsl(var(--border)); }
+.signal-cell .signal-derived + span { opacity: .75; }

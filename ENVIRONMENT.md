@@ -60,6 +60,55 @@ BACKSPYNE_NODE_OWNER_ID=
 BACKSPYNE_REPORT_SHARE_SECRET=
 
 ## ---------------------------------------------------------------------------
+## Optional: the deployment's own administrator (an account that does not need Clerk)
+## ---------------------------------------------------------------------------
+
+# The administrator is one identity, created from configuration rather than from a database
+# row, and it signs in at /admin with a password. It exists because the owner of a deployment
+# has to be able to open it — to read revenue and confirm relays are reporting — even where no
+# Clerk instance is configured or reachable, and because there is no way to create a Clerk
+# account from this repository.
+#
+# Generate the values with:  node scripts/issue-admin.mjs --email you@example.com
+# which prints the three lines below and the password exactly once. Without all of them set,
+# /admin says admin access is not configured instead of offering a form that cannot succeed.
+
+# The administrator's email address. Entered at sign-in and compared case-insensitively.
+BACKSPYNE_ADMIN_EMAIL=
+
+# scrypt verifier (`scrypt$salt$hash`), from the script above. Never a plaintext password
+# unless you choose the convenience variable below.
+BACKSPYNE_ADMIN_PASSWORD_HASH=
+
+# Convenience for a local checkout only: a plaintext password of at least 8 characters, hashed
+# by the server. Prefer the hash above anywhere the value could be read by anyone else.
+BACKSPYNE_ADMIN_PASSWORD=
+
+# Signs the administrator's session cookie (12 hours). Generate one; it is issued by the script
+# on line 3 and is not something to reuse elsewhere. When unset the server falls back to a
+# domain-separated derivation of BACKSPYNE_NODE_TOKEN, then of the report-share secret.
+BACKSPYNE_ADMIN_SESSION_SECRET=
+
+# The owner id the administrator acts as. Their relays, devices, reports, and calibrations are
+# scoped to it, and it counts as owner access for plan limits. Defaults to `admin`, which
+# cannot collide with a Clerk user id. Point it at a real Clerk id only to hand that account's
+# data to the administrator as well.
+BACKSPYNE_ADMIN_OWNER_ID=
+
+## ---------------------------------------------------------------------------
+## Optional: owner access (unlimited plan limits for named accounts)
+## ---------------------------------------------------------------------------
+
+# Comma-separated Clerk user ids that receive owner access: unlimited authorized relays,
+# full observation history, client report export, and the experimental CSI research
+# panels. It is configuration rather than a subscription — no purchase, no payment
+# record — and removing an id returns that account to the free plan on the next request.
+# Owner access lifts the *plan* gate only. It cannot supply CSI hardware, a sensing
+# engine, or a room calibration, so research panels still report those gates as closed.
+# Find an id with GET /api/me while signed in, or from a report share link's owner.
+BACKSPYNE_OWNER_USER_IDS=
+
+## ---------------------------------------------------------------------------
 ## Required for billing / revenue features (optional until you sell plans)
 ## ---------------------------------------------------------------------------
 

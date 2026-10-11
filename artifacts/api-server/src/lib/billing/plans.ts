@@ -2,7 +2,7 @@
 // Prices are monthly US-dollar list prices; they are intentionally small whole
 // numbers so the catalog can be rendered directly by the operator portal.
 
-export type PlanId = "free" | "solo" | "team" | "consultant";
+export type PlanId = "free" | "solo" | "team" | "consultant" | "owner";
 
 export interface PlanEntitlements {
   /** Maximum number of authorized local relays a single operator may register. */
@@ -13,6 +13,12 @@ export interface PlanEntitlements {
   reportExport: boolean;
   /** Whether gated CSI research panels may be enabled for this operator. */
   csiResearch: boolean;
+  /**
+   * True only for deployment-configured owner access. The relay allowance stays a real
+   * number above so every enforcement path keeps working; this flag is what the portal
+   * reads to describe the account as unlimited instead of printing a large limit.
+   */
+  unlimited?: boolean;
 }
 
 export interface PlanDefinition {
@@ -80,6 +86,26 @@ export const PLAN_CATALOG: readonly PlanDefinition[] = [
   },
 ] as const;
 
+/**
+ * Owner access. It is deliberately not part of PLAN_CATALOG: it is never purchasable and
+ * never appears in the plan grid, because it is granted by deployment configuration
+ * (`BACKSPYNE_OWNER_USER_IDS`) rather than bought. The relay allowance is a real ceiling so
+ * the enforcement code stays total, and `unlimited` is what the portal shows the owner.
+ */
+export const OWNER_PLAN: PlanDefinition = {
+  id: "owner",
+  name: "Owner access",
+  priceMonthlyUsd: 0,
+  tagline: "Internal operator access with no plan limits.",
+  highlights: [
+    "Unlimited authorized relays",
+    "Full observation history",
+    "Client report export",
+    "Experimental CSI research panels",
+  ],
+  entitlements: { maxRelays: 250, historyDays: 3650, reportExport: true, csiResearch: true, unlimited: true },
+};
+
 export const PLAN_IDS: readonly PlanId[] = PLAN_CATALOG.map((plan) => plan.id);
 
 const PLAN_BY_ID: Record<PlanId, PlanDefinition> = {
@@ -87,18 +113,43 @@ const PLAN_BY_ID: Record<PlanId, PlanDefinition> = {
   solo: PLAN_CATALOG[1],
   team: PLAN_CATALOG[2],
   consultant: PLAN_CATALOG[3],
+  owner: OWNER_PLAN,
 };
 
 /** Subscription states that count as a paid, usable plan. Anything else falls back to free. */
 export const ENTITLED_SUBSCRIPTION_STATUSES: readonly string[] = ["active", "trialing"];
 
+/**
+ * Whether a value is a plan an operator can hold or buy. `owner` is deliberately excluded:
+ * it is deployment configuration, so nothing that arrives from a request or a Stripe
+ * webhook can name it and be granted owner limits.
+ */
 export function isPlanId(value: unknown): value is PlanId {
   return typeof value === "string" && (PLAN_IDS as readonly string[]).includes(value);
 }
 
-/** Returns the plan definition for a stored plan id, falling back to the free plan. */
+/** Returns the plan definition for a known plan id, falling back to the free plan. */
 export function planDefinition(planId: string | null | undefined): PlanDefinition {
-  return isPlanId(planId) ? PLAN_BY_ID[planId] : PLAN_BY_ID.free;
+  if (typeof planId === "string" && Object.prototype.hasOwnProperty.call(PLAN_BY_ID, planId)) {
+    return PLAN_BY_ID[planId as PlanId];
+  }
+  return PLAN_BY_ID.free;
+}
+
+/**
+ * The owner allowlist, read from `BACKSPYNE_OWNER_USER_IDS` as comma-separated Clerk user
+ * ids. Parsed on every call so rotating it is a configuration change, and an exact match
+ * only, so a truncated id can never widen access.
+ */
+export function ownerUserIds(env: NodeJS.ProcessEnv = process.env): string[] {
+  return String(env.BACKSPYNE_OWNER_USER_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+export function isOwnerAccount(ownerId: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(ownerId) && ownerUserIds(env).includes(ownerId);
 }
 
 export function entitlementsFor(planId: string | null | undefined): PlanEntitlements {

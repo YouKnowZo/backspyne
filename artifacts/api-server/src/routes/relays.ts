@@ -10,8 +10,8 @@ import {
 
 const router: IRouter = Router();
 
-function relayAllowance(maxRelays: number, active: number) {
-  return { maxRelays, active, remaining: Math.max(0, maxRelays - active) };
+function relayAllowance(maxRelays: number, active: number, unlimited = false) {
+  return { maxRelays, active, remaining: Math.max(0, maxRelays - active), unlimited };
 }
 
 /** Pairing state for the signed-in operator. Token digests are never returned. */
@@ -21,11 +21,11 @@ router.get("/relays", requireAuth, async (req: AuthenticatedRequest, res, next) 
       listRelayTokens(req.userId!),
       (async () => {
         const { entitlements } = await ownerEntitlements(req.userId!);
-        return entitlements.maxRelays;
+        return entitlements;
       })(),
     ]);
     const active = relays.filter((relay) => relay.active).length;
-    res.json({ relays, allowance: relayAllowance(allowance, active) });
+    res.json({ relays, allowance: relayAllowance(allowance.maxRelays, active, allowance.unlimited === true) });
   } catch (error) {
     next(error);
   }
@@ -54,7 +54,7 @@ router.post("/relays", requireAuth, async (req: AuthenticatedRequest, res, next)
       return;
     }
     const created = await createRelayToken(req.userId!, label);
-    res.status(201).json({ relay: created.relay, token: created.token, allowance: relayAllowance(entitlements.maxRelays, active + 1) });
+    res.status(201).json({ relay: created.relay, token: created.token, allowance: relayAllowance(entitlements.maxRelays, active + 1, entitlements.unlimited === true) });
   } catch (error) {
     next(error);
   }

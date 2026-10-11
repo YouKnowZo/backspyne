@@ -11,12 +11,15 @@ import { createHmac } from "node:crypto";
 
 import {
   ENTITLED_SUBSCRIPTION_STATUSES,
+  OWNER_PLAN,
   PLAN_CATALOG,
   PLAN_IDS,
   effectiveEntitlements,
   effectivePlanId,
   entitlementsFor,
+  isOwnerAccount,
   isPlanId,
+  ownerUserIds,
   planDefinition,
 } from "../src/lib/billing/plans.ts";
 import {
@@ -278,6 +281,38 @@ test("subscription lifecycle events map price ids to plans and carry the period 
   assert.ok(weird);
   assert.equal(weird.status, "incomplete");
   assert.equal(weird.planId, null);
+});
+
+test("owner access is configuration, never a plan an operator can hold or buy", () => {
+  // Not in the catalog, so no plan grid offers it and no stored plan id can name it.
+  assert.equal(PLAN_CATALOG.some((plan) => plan.id === "owner"), false);
+  assert.equal(isPlanId("owner"), false);
+  // But the definition resolves, which is what every entitlement read uses.
+  assert.equal(planDefinition("owner").id, "owner");
+  assert.equal(planDefinition("owner").name, OWNER_PLAN.name);
+  const owner = entitlementsFor("owner");
+  assert.equal(owner.unlimited, true);
+  assert.ok(owner.reportExport && owner.csiResearch);
+  assert.ok(owner.maxRelays > entitlementsFor("consultant").maxRelays);
+  assert.ok(owner.historyDays >= entitlementsFor("consultant").historyDays);
+  // A stored subscription can never be upgraded to owner by the webhook mapper.
+  assert.equal(effectivePlanId("owner", "active"), "free");
+  // Entitlements are copies, so a caller cannot edit the shared owner definition.
+  owner.maxRelays = 1;
+  assert.ok(entitlementsFor("owner").maxRelays > 1);
+});
+
+test("the owner allowlist is exact, trimmed, and empty by default", () => {
+  assert.deepEqual(ownerUserIds({}), []);
+  assert.deepEqual(ownerUserIds({ BACKSPYNE_OWNER_USER_IDS: " user_1 , ,user_2 " }), ["user_1", "user_2"]);
+  assert.equal(isOwnerAccount("user_1", { BACKSPYNE_OWNER_USER_IDS: "user_1,user_2" }), true);
+  assert.equal(isOwnerAccount("user_2", { BACKSPYNE_OWNER_USER_IDS: "user_1,user_2" }), true);
+  assert.equal(isOwnerAccount("user_3", { BACKSPYNE_OWNER_USER_IDS: "user_1,user_2" }), false);
+  // No configuration means nobody is an owner, and a partial or empty id never matches.
+  assert.equal(isOwnerAccount("user_1", {}), false);
+  assert.equal(isOwnerAccount("", { BACKSPYNE_OWNER_USER_IDS: "user_1" }), false);
+  assert.equal(isOwnerAccount("user", { BACKSPYNE_OWNER_USER_IDS: "user_1" }), false);
+  assert.equal(isOwnerAccount("user_1", { BACKSPYNE_OWNER_USER_IDS: "user_1suffix" }), false);
 });
 
 test("unattributed and unrelated events are acknowledged without granting anything", () => {

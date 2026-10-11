@@ -80,7 +80,7 @@ BACKSPYNE_NODE_TOKEN=
 
 These empty required values intentionally fail scanner validation until configured. Optional variables: `BACKSPYNE_CSI_SERIAL_PORT` (separate compatible hardware required), `BACKSPYNE_CSI_BAUDRATE` (default `115200`). Node ID defaults to the machine hostname if omitted; name defaults to the node ID. Interval must be 2–3600 seconds. `BACKSPYNE_CSI_UDP_PORT` is not read by the current configuration.
 
-Optional server variables: `LOG_LEVEL` (default `info`), `PORT` (default `8080`) and `HOST` (default `0.0.0.0`) for the standalone local listener. Vercel manages runtime `NODE_ENV`; Vite supplies `BASE_URL` and `DEV`. Do not add those build/runtime-provided flags as authentication credentials. `VITE_CLERK_PROXY_URL` is optional and currently unset; keep it unset unless the proxy is explicitly tested.
+Optional server variables: `LOG_LEVEL` (default `info`), `PORT` (default `8080`) and `HOST` (default `0.0.0.0`) for the standalone local listener. `BACKSPYNE_OWNER_USER_IDS` is a comma-separated allowlist of Clerk user ids that receive owner access — unlimited relays, full history, report export, and the experimental CSI research panels — ahead of any stored subscription. It is configuration and not a purchase: no Stripe record is involved, removing an id returns the account to the free plan, and it lifts the plan gate only (research hardware, engines and calibration are unaffected). Vercel manages runtime `NODE_ENV`; Vite supplies `BASE_URL` and `DEV`. Do not add those build/runtime-provided flags as authentication credentials. `VITE_CLERK_PROXY_URL` is optional and currently unset; keep it unset unless the proxy is explicitly tested.
 
 ### BackSpyne API contract
 
@@ -89,40 +89,50 @@ Base URL: `https://backspyne-app.vercel.app/api`.
 - `GET /healthz`: public liveness/configuration check; does not prove database connectivity.
 - `GET /me`: signed-in application user identity; current API configuration guard also requires the database.
 - `GET /devices`; `PATCH /devices/:id`; `GET /devices/:id/trail`.
-- `GET /nodes`; `POST /nodes`; `PATCH /nodes/:id`; `DELETE /nodes/:id`.
+- `GET /nodes`; `POST /nodes`; `PATCH /nodes/:id`; `DELETE /nodes/:id`. A relay carries an optional placement: `positionX`, `positionY` (metres east and north of the site origin, ±10000) and `positionLabel`, set through `PATCH /nodes/:id` and cleared by sending both coordinates as `null`. The three columns are added on first use by the API (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`), and `lib/db/backspyne-bootstrap.sql` carries the same statements for a hand-run upgrade.
+- `GET /location/:deviceId`: where a stored radio has been heard from in the last 30 minutes. Returns one entry per relay that heard it (level, implied distance, placed or not), the fitted position with its status — `estimated`, `ambiguous`, `single_relay`, `no_signal` — its uncertainty radius, its residual per relay, and a one-point-per-minute track. Positions come from the log-distance path-loss model in `artifacts/api-server/src/lib/localization.ts` and only from relays the operator has placed; fewer than three placed relays that hear the same radio produce a ring or two candidates rather than a point, because that is all the geometry supports.
 - `GET /sessions`; `POST /sessions`; `PATCH /sessions/:id`; `POST /sessions/:id/close`.
 - `GET /sensing/summary`; `GET /evidence`; `POST /evidence`; `GET /stream` (SSE).
 - `GET /report/assessment`: the printable client report, built from stored relay observations and the operator's own plan. Authorized either by the operator's session or by a `?share=<token>` link; the link is signed, scoped to the account that issued it, and expires after seven days. `POST /report/assessment/share` (session required) creates that link. Sharing reports `503` only when neither `BACKSPYNE_REPORT_SHARE_SECRET` nor `BACKSPYNE_NODE_TOKEN` is configured.
-- `POST /ingest/telemetry`: local bridge ingestion. Requires `X-Backspyne-Node-Token` and `X-Backspyne-Signature`, an HMAC-SHA256 hex digest over the exact JSON body bytes using the shared node token, plus validated owner/timestamp/payload. Use the existing bridge rather than hand-crafted unsigned requests.
+- `POST /ingest/telemetry`: local bridge ingestion. Requires `X-Backspyne-Node-Token` and `X-Backspyne-Signature`, an HMAC-SHA256 hex digest over the exact JSON body bytes using the shared node token, plus validated owner/timestamp/payload. Use the existing bridge rather than hand-crafted unsigned requests. An observation may carry `signalDbm` (measured power) or `signalQualityPercent` (the 0-100 link-quality scale Windows WiFi and NetworkManager report). A percentage is converted to dBm at this one writer, and the sighting records which of the two it was, so a Windows-only relay can locate WiFi access points instead of dropping them for want of a level.
+- `GET /calibration`, `POST /calibration`: the calibration walk. `GET` reports the fitted site constants in force, the requirements a walk must meet, and what each radio contributed; `POST` solves a walked set of known positions for the site's path-loss constants and keeps the result, after which position estimates use it in place of the deployed defaults. A fit that does not beat the defaults, or a walk that never moved or never varied its levels, is refused rather than stored.
+- `GET /billing/catalog`, `POST /billing/checkout`, `POST /billing/portal`, `POST /billing/webhook`: the revenue surface. The webhook is public by necessity and is authenticated by Stripe's signature over the raw body.
+- `GET /public/plans`: the pricing page. Public by design; needs no database and no session.
+- `POST /admin/login`, `POST /admin/logout`, `GET /admin/session`, `GET /admin/revenue`: the deployment owner's own account, configured by environment rather than by a database row. Sign-in, sign-out, and session read import no database module, so an administrator can open the console on a deployment whose database is not provisioned yet; only `/admin/revenue` needs rows.
 
 Operator routes require Clerk authentication. Setting environment variables does not replace database schema setup or grant access to another user's data.
 
-### Future billing variables — NOT currently consumed by the code
+### Billing variables — required to start charging
 
-If Stripe is selected and implemented, expected server configuration would include `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and approved server-side Price IDs (for example `STRIPE_PRICE_PRO_MONTHLY`). These names are proposed interface choices, not existing requirements or usable credentials. Hosted checkout need not require a frontend Stripe key. There is no working billing integration yet; adding these variables alone will not enable charging.
+The subscription surface is implemented server-side (`artifacts/api-server/src/lib/billing/`, `routes/billing.ts`) and it is off until these are set. No client-side Stripe key is needed: Checkout and the billing portal are hosted sessions the server creates.
 
-## Proposed revenue system (not implemented)
+- `STRIPE_SECRET_KEY` — server key. Absent, `GET /api/billing/catalog` still lists the plans but reports checkout as unconfigured, and `POST /api/billing/checkout` answers `503 { code: "billing_not_configured" }` instead of failing halfway.
+- `STRIPE_WEBHOOK_SECRET` — verifies `POST /api/billing/webhook`. Without it no subscription row is ever written, so the admin revenue view reports zero rather than guessing.
+- `STRIPE_PRICE_SOLO`, `STRIPE_PRICE_TEAM`, `STRIPE_PRICE_CONSULTANT` — server-side Price IDs for the three sellable plans. A plan without a price id is listed but cannot be bought, and the API never accepts a price from the request body.
+- `FRONTEND_ORIGIN` — the origin Checkout returns to.
 
-Subscription-based authorized monitoring is the selected model. A possible split is basic live monitoring versus paid history, exports, and more approved nodes; exact limits and prices are undecided.
+Prices come from one list (`lib/billing/plans.ts`): Free, Solo $39, Team $149, Consultant $399 monthly. The public pricing page reads that same list, so a displayed price cannot drift from the charged one.
 
-Gravity Index was queried for subscription providers but returned no matching catalog entry. Official Stripe documentation supports hosted subscription Checkout and a customer billing portal:
+### Revenue enforcement, where it actually binds
+
+Entitlements are enforced in the API rather than in the redirect: relay registration counts against `maxRelays` at ingest, history is windowed by `historyDays` on read, and CSV report export and the CSI research panels are gated on `reportExport` and `csiResearch`. A subscription counts only while its status is `active` or `trialing`; anything else falls back to the free plan (`effectivePlanId`), so a lapsed card loses paid limits on the next request rather than at the next invoice.
+
+## Revenue system
+
+Subscription-based authorized monitoring is the model, and it is now built end to end: a public pricing page, authenticated hosted Checkout, a self-service billing portal, a signature-verified webhook that writes subscription state, plan-aware enforcement, and an owner revenue view at `/admin` that counts only what the verified webhook wrote.
+
+Stripe is the configured provider. Start in test mode; activate live charging only after owner approval and business verification, and validate supported business country, fees, tax responsibilities, and acceptable-use policy first.
 
 - https://docs.stripe.com/billing/quickstart
 - https://docs.stripe.com/customer-management
 
-Stripe is a proposed provider, not a configured account. Validate supported business country, fees, tax responsibilities, and acceptable-use policy before selecting it. Start in test mode. Activate live charging only after owner approval and business verification.
+Still to prove before relying on it:
 
-Required implementation gates:
-
-- Authenticated server-created checkout with a server-controlled price allowlist; never accept arbitrary client prices or owner IDs.
-- Server-owned mapping of Clerk user to billing customer and subscription.
-- Signed raw-body webhook verification with timestamp tolerance, persistent event idempotency, and safe handling of retries and out-of-order events.
-- Durable entitlement state; enforce limits in API/ingestion, not only UI or checkout redirect parameters.
-- Self-service billing portal authorized against the signed-in customer's mapping.
-- Tested renewals, cancellation, failed payments, and entitlement removal according to published terms.
-- Do not collect card details in the application, imply payment success from a redirect, or promise revenue.
-- Replace the single globally configured relay owner/token model with per-owner, per-node credentials before supporting multiple paying operators.
-- Confirm the hosting plan permits commercial use; do not upgrade a paid plan without approval.
+- Test-mode run of a full purchase: checkout, webhook delivery, entitlement lift, portal cancellation, failed payment, and entitlement removal. The unit tests cover the catalog, mapping, and signature rules; they do not prove a live Stripe round trip.
+- Idempotency and out-of-order delivery of retried webhook events against the real endpoint.
+- Refund, dunning, and tax behaviour for the jurisdictions you intend to sell into.
+- Commercial-use permission on the hosting plan; do not upgrade a paid plan without approval.
+- Do not collect card details in the application and never infer a completed purchase from a redirect.
 
 ## Production acceptance checks
 

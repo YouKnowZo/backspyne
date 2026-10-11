@@ -5,6 +5,7 @@ import { clerkMiddleware } from "@clerk/express";
 import { publishableKeyFromHost } from "@clerk/shared/keys";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { adminConfigured } from "./lib/adminAuth";
 import { logger } from "./lib/logger";
 import {
   CLERK_PROXY_PATH,
@@ -63,11 +64,52 @@ async function routeApi(
     res.json({ status: "ok", database: process.env.DATABASE_URL ? "configured" : "not_configured" });
     return;
   }
+  // Two families of route deliberately answer without Clerk, because neither is an operator
+  // request: the public plan catalog is the pricing page, and the administrator's sign-in,
+  // sign-out, and session read are how the deployment's own owner gets in when a third-party
+  // identity provider is not configured (a local checkout, or a staging deployment). Both are
+  // still gated on their own configuration — a deployment with no administrator configured
+  // says so rather than exposing a login that could never succeed.
+  //
+  // They are served by `./routes/open`, which imports no database module. Importing the whole
+  // API here would pull in `@workspace/db`, and that module throws at import time when
+  // `DATABASE_URL` is unset — turning a route that needs no rows into a 500.
+  if (req.path.startsWith("/public/")) {
+    try {
+      const { default: router } = await import("./routes/open");
+      router(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+    return;
+  }
+  const adminAuthPath = req.path === "/admin/login" || req.path === "/admin/logout" || req.path === "/admin/session";
+  if (adminAuthPath && adminConfigured()) {
+    try {
+      const { default: router } = await import("./routes/open");
+      router(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+    return;
+  }
   if (!process.env.DATABASE_URL) {
     res.status(503).json({ error: "Database is not configured; telemetry and operator data are unavailable" });
     return;
   }
   if (!process.env.CLERK_SECRET_KEY || !process.env.CLERK_PUBLISHABLE_KEY) {
+    // With no Clerk instance, an administrator session is the only identity this deployment
+    // has. Anything that needs an owner still requires the database above, so this widens who
+    // may ask, never what is answered without data.
+    if (adminConfigured()) {
+      try {
+        const { default: router } = await import("./routes");
+        router(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+      return;
+    }
     res.status(503).json({ error: "Authentication is not configured; operator API is unavailable" });
     return;
   }
@@ -140,6 +182,7 @@ app.get("/sign-up", serveShell);
 app.get("/sign-up/*splat", serveShell);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (process.env.BACKSPYNE_TRACE_ERRORS === "1") console.error("TRACE:", err);
   logger.error({ err }, "Unhandled API request error");
   if (res.headersSent) return;
   res.status(500).json({ error: "Internal server error" });

@@ -24,6 +24,9 @@ function catalogPayload(config: StripeConfig | null, currentPlanId: string, stat
   return {
     configured: Boolean(config),
     currentPlanId,
+    // Owner access is not a row in the plan grid, so its display name travels with the
+    // catalog instead of being guessed from the plan id on the client.
+    currentPlanName: planDefinition(currentPlanId).name,
     status,
     entitlements,
     plans: PLAN_CATALOG.map((plan) => ({

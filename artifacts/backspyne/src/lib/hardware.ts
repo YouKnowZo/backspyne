@@ -39,6 +39,38 @@ function find(capabilities: HardwareCapability[], id: string): HardwareCapabilit
   return capabilities.find(capability => capability.id === id);
 }
 
+const STATUS_WORDS: Record<HardwareStatus, string> = {
+  ready: 'ready',
+  permission: 'permission needed',
+  connected: 'connected',
+  limited: 'limited',
+  unsupported: 'not exposed',
+};
+
+/**
+ * What one scan changed compared with the previous one. A scan that finds nothing new is
+ * still a result, so an empty list is reported as exactly that by the caller rather than
+ * being indistinguishable from a button that did nothing.
+ */
+export function describeHardwareChanges(previous: HardwareCapability[], next: HardwareCapability[]): string[] {
+  const changes: string[] = [];
+  for (const capability of next) {
+    const before = previous.find(item => item.id === capability.id);
+    if (!before) {
+      changes.push(`${capability.label}: checked for the first time`);
+      continue;
+    }
+    if (before.status !== capability.status) {
+      changes.push(`${capability.label}: ${STATUS_WORDS[before.status]} → ${STATUS_WORDS[capability.status]}`);
+      continue;
+    }
+    if (before.detail !== capability.detail) {
+      changes.push(`${capability.label}: ${capability.detail}`);
+    }
+  }
+  return changes;
+}
+
 /** Probes the browser for what it actually exposes and returns the updated catalog. */
 export async function scanHardwareCapabilities(): Promise<HardwareCapability[]> {
   if (typeof navigator === 'undefined') return initialHardware;
@@ -134,9 +166,12 @@ export async function scanHardwareCapabilities(): Promise<HardwareCapability[]> 
 
   const wifi = find(next, 'wifi');
   if (wifi) {
-    if (hardwareNavigator.connection?.effectiveType) {
-      wifi.detail = `Network link reports ${hardwareNavigator.connection.effectiveType}. Browsers do not expose nearby WiFi scan results.`;
-    }
+    // The one WiFi fact a browser does expose is the link this device is on, so the scan
+    // reports it instead of leaving the card saying only what it cannot do.
+    const link: string[] = [hardwareNavigator.onLine === false ? 'This device reports no network link' : 'This device reports an active network link'];
+    if (hardwareNavigator.connection?.effectiveType) link.push(`link type ${hardwareNavigator.connection.effectiveType}`);
+    if (typeof hardwareNavigator.connection?.downlink === 'number') link.push(`about ${hardwareNavigator.connection.downlink} Mb/s reported`);
+    wifi.detail = `${link.join(' · ')}. Nearby WiFi scan results are still not exposed by any browser.`;
     wifi.status = 'limited';
   }
 
