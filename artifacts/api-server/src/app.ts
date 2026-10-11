@@ -123,12 +123,48 @@ async function routeApi(
 
 app.use("/api", routeApi);
 
-const webDir = path.resolve(process.cwd(), "dist/web");
+/**
+ * Where the built single-page app lives.
+ *
+ * The web bundle is emitted to the repository's `dist/web`. A deployment starts the server
+ * from the repository root, where that path is exactly right; the documented local flow starts
+ * it from the API package directory, where it is not — and a missing shell is not a 404 but a
+ * 500 on every page, including `/admin`. So the same candidates the bridge download tries are
+ * tried here, and the first directory that actually holds the shell wins.
+ *
+ * Resolved once per process and remembered, so the search costs nothing after the first page.
+ */
+const WEB_DIR_CANDIDATES = [
+  path.resolve(process.cwd(), "dist", "web"),
+  path.resolve(process.cwd(), "..", "..", "dist", "web"),
+  path.resolve(process.cwd(), "..", "dist", "web"),
+];
+
+let webDirPromise: Promise<string> | null = null;
+async function resolveWebDir(): Promise<string> {
+  if (!webDirPromise) {
+    webDirPromise = (async () => {
+      for (const candidate of WEB_DIR_CANDIDATES) {
+        try {
+          await readFile(path.join(candidate, "index.html"));
+          return candidate;
+        } catch {
+          // Not this one; try the next.
+        }
+      }
+      // Nothing to serve: said once, loudly, with the paths that were tried, rather than
+      // surfacing as an unexplained 500 on every request.
+      logger.error({ tried: WEB_DIR_CANDIDATES }, "No built web bundle was found; the console shell cannot be served");
+      return WEB_DIR_CANDIDATES[0];
+    })();
+  }
+  return webDirPromise;
+}
 
 let builtHtml: string | null = null;
 async function serveShell(_req: express.Request, res: express.Response, next: express.NextFunction) {
   try {
-    if (!builtHtml) builtHtml = await readFile(path.resolve(webDir, "index.html"), "utf8");
+    if (!builtHtml) builtHtml = await readFile(path.resolve(await resolveWebDir(), "index.html"), "utf8");
     res.type("html").send(builtHtml);
   } catch (error) {
     next(error);
@@ -142,7 +178,7 @@ app.get("/assets/:file", async (req, res, next) => {
       res.status(404).end();
       return;
     }
-    const filePath = path.resolve(webDir, "assets", fileName);
+    const filePath = path.resolve(await resolveWebDir(), "assets", fileName);
     const contents = await readFile(filePath);
     res.type(path.extname(filePath)).set("Cache-Control", "public, max-age=31536000, immutable").send(contents);
   } catch (error) {
@@ -151,22 +187,22 @@ app.get("/assets/:file", async (req, res, next) => {
 });
 app.get("/manifest.webmanifest", async (_req, res, next) => {
   try {
-    res.type("application/manifest+json").send(await readFile(path.resolve(webDir, "manifest.webmanifest")));
+    res.type("application/manifest+json").send(await readFile(path.resolve(await resolveWebDir(), "manifest.webmanifest")));
   } catch (error) { next(error); }
 });
 app.get("/sw.js", async (_req, res, next) => {
   try {
-    res.type("application/javascript").set("Service-Worker-Allowed", "/").send(await readFile(path.resolve(webDir, "sw.js")));
+    res.type("application/javascript").set("Service-Worker-Allowed", "/").send(await readFile(path.resolve(await resolveWebDir(), "sw.js")));
   } catch (error) { next(error); }
 });
 app.get("/favicon.svg", async (_req, res, next) => {
   try {
-    res.type("image/svg+xml").send(await readFile(path.resolve(webDir, "favicon.svg")));
+    res.type("image/svg+xml").send(await readFile(path.resolve(await resolveWebDir(), "favicon.svg")));
   } catch (error) { next(error); }
 });
 app.get("/logo.svg", async (_req, res, next) => {
   try {
-    res.type("image/svg+xml").send(await readFile(path.resolve(webDir, "logo.svg")));
+    res.type("image/svg+xml").send(await readFile(path.resolve(await resolveWebDir(), "logo.svg")));
   } catch (error) { next(error); }
 });
 app.get("/", serveShell);
