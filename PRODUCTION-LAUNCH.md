@@ -113,6 +113,30 @@ The subscription surface is implemented server-side (`artifacts/api-server/src/l
 
 Prices come from one list (`lib/billing/plans.ts`): Free, Solo $39, Team $149, Consultant $399 monthly. The public pricing page reads that same list, so a displayed price cannot drift from the charged one.
 
+### Creating the Stripe objects
+
+The three prices and the webhook endpoint are created by a script rather than by hand, because a hand-made price is where the displayed amount and the charged amount come apart:
+
+```
+node scripts/setup-stripe-billing.mjs                              # dry run: report what is missing
+node scripts/setup-stripe-billing.mjs --apply --write-local-env     # create, and record the ids
+node scripts/setup-stripe-billing.mjs --apply --rotate-webhook      # mint a fresh signing secret
+```
+
+It reads `STRIPE_SECRET_KEY` from the environment or from a gitignored `.env.stripe.local`, sets `backspyne_plan` metadata on every product it creates, and reuses an existing active monthly price at the same amount instead of creating a second one — a Stripe price cannot be edited, only archived, so a duplicate is a mess to undo. `--write-local-env` records the price ids and the webhook signing secret in that file rather than printing them: Stripe shows a signing secret exactly once, and a secret that only ever existed in a terminal is a secret that has to be rotated next week.
+
+`scripts/setup-stripe-billing.mjs` is idempotent and re-runnable. Two encoding rules inside it are load-bearing and are covered by `scripts/test/stripe-billing.test.mjs`: arrays need an index per element (`enabled_events[0]=…`), and `expand` must not go through that path, because Stripe ignores a malformed expand silently and the reuse check then goes blind.
+
+### Proving the webhook actually verifies
+
+A wrong signing secret has no symptom: Stripe's events are rejected with 400, no subscription is ever recorded, and the product looks fine while billing nobody. `scripts/probe-stripe-webhook.mjs` settles it with one signed request and one deliberately corrupted one:
+
+```
+node scripts/probe-stripe-webhook.mjs
+```
+
+It sends a no-op event — a subscription update carrying no operator id, which the handler classifies as unattributed and answers without writing anything — so a `200` proves the secret verifies without creating, changing, or billing anything, and a `400` proves it does not. It also asserts that a corrupted signature is refused, since an endpoint that answers `200` to that one is verifying nothing at all.
+
 ### Revenue enforcement, where it actually binds
 
 Entitlements are enforced in the API rather than in the redirect: relay registration counts against `maxRelays` at ingest, history is windowed by `historyDays` on read, and CSV report export and the CSI research panels are gated on `reportExport` and `csiResearch`. A subscription counts only while its status is `active` or `trialing`; anything else falls back to the free plan (`effectivePlanId`), so a lapsed card loses paid limits on the next request rather than at the next invoice.
@@ -126,10 +150,13 @@ Stripe is the configured provider. Start in test mode; activate live charging on
 - https://docs.stripe.com/billing/quickstart
 - https://docs.stripe.com/customer-management
 
+What has been proven against the live account: the three products and prices exist and match the catalog; `POST /api/billing/checkout` creates a real `cs_live_…` subscription session for the right amount with the right plan metadata; the endpoint at `/api/billing/webhook` verifies its signing secret and refuses a corrupted signature; and a plan cannot be selected that the client names but the server has not priced.
+
 Still to prove before relying on it:
 
-- Test-mode run of a full purchase: checkout, webhook delivery, entitlement lift, portal cancellation, failed payment, and entitlement removal. The unit tests cover the catalog, mapping, and signature rules; they do not prove a live Stripe round trip.
-- Idempotency and out-of-order delivery of retried webhook events against the real endpoint.
+- A completed purchase end to end: a real payment, the resulting webhook delivery, the entitlement lift it grants, and the admin revenue view counting it. Nothing has been bought yet.
+- Portal self-service against a real billing customer (it correctly refuses an account with no billing profile).
+- A deliberate duplicate and out-of-order delivery of a retried webhook event against the real endpoint.
 - Refund, dunning, and tax behaviour for the jurisdictions you intend to sell into.
 - Commercial-use permission on the hosting plan; do not upgrade a paid plan without approval.
 - Do not collect card details in the application and never infer a completed purchase from a redirect.
