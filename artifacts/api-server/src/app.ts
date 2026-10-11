@@ -173,6 +173,11 @@ app.get("/", serveShell);
 app.get("/index.html", serveShell);
 app.get("/legal", serveShell);
 app.get("/user-portal", serveShell);
+// The administrator's own address is a client route like any other view: without it a
+// bookmark, a refresh, or a pasted link to /admin reaches the shell's 404 instead of the
+// sign-in form, and the one account that exists to open a deployment cannot get in.
+app.get("/admin", serveShell);
+app.get("/admin/*splat", serveShell);
 // The console's views live at their own addresses, so a deep link, a shared link, or a
 // refresh inside any of them has to reach the shell rather than a 404.
 app.get("/user-portal/*splat", serveShell);

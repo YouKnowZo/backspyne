@@ -318,7 +318,10 @@ export function Admin() {
     </>}
 
     <footer className="admin-footer">
-      <span>Admin access is separate from the operator portal and grants no access to measured data.</span>
+      {/* What this surface actually reaches, stated plainly: the counts above are deployment-wide,
+          and anything owner-scoped belongs to the configured admin owner id. Claiming it read no
+          measurements at all would be false on this very page. */}
+      <span>Admin access is separate from the operator portal. The usage counts above are deployment-wide; any operator record it can open is the one scoped to the configured admin owner id, and another operator's measurements stay in their own account.</span>
       <a className="legal-link" href={`${basePath}/`}>BackSpyne home</a>
     </footer>
   </div></div>;
