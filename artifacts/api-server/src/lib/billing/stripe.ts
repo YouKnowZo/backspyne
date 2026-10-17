@@ -9,11 +9,22 @@
 // This module only depends on the Node standard library, so it stays loadable by
 // `node --test` without a bundler.
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 const STRIPE_API_BASE = "https://api.stripe.com/v1";
 const DEFAULT_TOLERANCE_SECONDS = 300;
 const REQUEST_TIMEOUT_MS = 12_000;
+
+export const BILLING_WEBHOOK_EVENTS = [
+  "checkout.session.completed",
+  "checkout.session.async_payment_succeeded",
+  "checkout.session.async_payment_failed",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.paid",
+  "invoice.payment_failed",
+] as const;
 
 export interface StripeConfig {
   secretKey: string;
@@ -22,6 +33,8 @@ export interface StripeConfig {
   origin: string;
   /** Plan id -> Stripe price id. Plans absent here cannot be purchased. */
   priceIds: Record<string, string>;
+  /** Optional Customer Portal configuration id created by setup-stripe-billing.mjs. */
+  portalConfigurationId?: string;
 }
 
 export type StripeFormValue = string | number | boolean | undefined;
@@ -54,8 +67,8 @@ function looksLikeSecretKey(value: string) {
 
 /**
  * Reads Stripe configuration from the environment. Returns null unless billing is
- * fully usable (secret key, webhook secret, safe redirect origin), because a
- * half-configured billing surface must fail closed rather than half-work.
+ * fully usable (secret key, webhook secret, safe redirect origin, and at least one
+ * price id), because a half-configured billing surface must fail closed rather than half-work.
  */
 export function stripeConfigFromEnv(env: Record<string, string | undefined>): StripeConfig | null {
   const secretKey = trimmed(env.STRIPE_SECRET_KEY);
@@ -71,7 +84,14 @@ export function stripeConfigFromEnv(env: Record<string, string | undefined>): St
     if (priceId) priceIds[planId] = priceId;
   }
   if (!Object.keys(priceIds).length) return null;
-  return { secretKey, webhookSecret, origin, priceIds };
+  const portalConfigurationId = trimmed(env.STRIPE_PORTAL_CONFIGURATION_ID) || undefined;
+  return {
+    secretKey,
+    webhookSecret,
+    origin,
+    priceIds,
+    ...(portalConfigurationId ? { portalConfigurationId } : {}),
+  };
 }
 
 export function planIdForPriceId(config: StripeConfig, priceId: unknown): string | null {
@@ -100,6 +120,8 @@ export interface StripeResponse {
   ok: boolean;
   status: number;
   body: Record<string, unknown>;
+  code?: string;
+  rawBody?: Buffer;
 }
 
 /**
@@ -111,17 +133,22 @@ export async function stripeRequest(
   method: "POST" | "GET",
   path: string,
   fields: Record<string, StripeFormValue> = {},
+  idempotencyKey?: string,
 ): Promise<StripeResponse> {
   const encoded = encodeStripeForm(fields);
   const url = `${STRIPE_API_BASE}${path}${method === "GET" && encoded ? `?${encoded}` : ""}`;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${config.secretKey}`,
+    "Content-Type": "application/x-www-form-urlencoded",
+    "Stripe-Version": "2024-06-20",
+  };
+  if (idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
   try {
     const response = await fetch(url, {
       method,
-      headers: {
-        Authorization: `Bearer ${config.secretKey}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Stripe-Version": "2024-06-20",
-      },
+      headers,
       body: method === "POST" ? encoded : undefined,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -133,7 +160,9 @@ export async function stripeRequest(
     } catch {
       body = {};
     }
-    return { ok: response.ok, status: response.status, body };
+    const errorRecord = record(body.error);
+    const code = typeof errorRecord.code === "string" ? errorRecord.code : undefined;
+    return { ok: response.ok, status: response.status, body, code, rawBody: Buffer.from(text) };
   } catch {
     return { ok: false, status: 0, body: {} };
   }
@@ -193,7 +222,7 @@ export function verifyStripeSignature(input: StripeSignatureInput): boolean {
 
 export interface StripeSubscriptionUpdate {
   ownerId: string;
-  /** Plan id carried by Stripe metadata, already known-purchasable or null. */
+  /** Plan id carried by Stripe price/metadata, already known-purchasable or null. */
   planId: string | null;
   status: string;
   stripeCustomerId: string | null;
@@ -209,6 +238,12 @@ function record(value: unknown): Record<string, unknown> {
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Extracts a Stripe object id whether the field is a string id or an expanded object `{ id: string }`. */
+export function stripeObjectId(value: unknown): string | null {
+  if (typeof value === "string") return text(value);
+  return text(record(value).id);
 }
 
 function periodEndFromSeconds(value: unknown): Date | null {
@@ -241,6 +276,90 @@ function knownStatus(value: unknown): string | null {
   return candidate && SUBSCRIPTION_STATUSES.includes(candidate) ? candidate : null;
 }
 
+/** Extracts the target Stripe subscription id from a webhook event payload. */
+export function stripeSubscriptionIdFromEvent(event: unknown): string | null {
+  const identity = stripeEventIdentity(event);
+  if (!identity) return null;
+  const object = record(record(record(event).data).object);
+  if (identity.type.startsWith("customer.subscription.")) {
+    return stripeObjectId(object.id);
+  }
+  if (identity.type.startsWith("checkout.session.")) {
+    if (text(object.mode) && text(object.mode) !== "subscription") return null;
+    return stripeObjectId(object.subscription);
+  }
+  if (identity.type.startsWith("invoice.")) {
+    const direct = stripeObjectId(object.subscription);
+    if (direct) return direct;
+    const details = record(record(object.parent).subscription_details);
+    return stripeObjectId(details.subscription);
+  }
+  return null;
+}
+
+function subscriptionUpdateFromSubscriptionObject(
+  object: Record<string, unknown>,
+  config: StripeConfig,
+  deleted = false,
+): StripeSubscriptionUpdate {
+  const metadata = record(object.metadata);
+  const ownerId = text(metadata.ownerId) ?? "";
+  const customerId = stripeObjectId(object.customer) ?? text(object.customer_id);
+  const subscriptionId = stripeObjectId(object.id);
+  const status = deleted ? "canceled" : knownStatus(object.status) ?? "incomplete";
+
+  const items = record(object.items);
+  const itemList = Array.isArray(items.data) ? items.data : [];
+  let periodEnd = periodEndFromSeconds(object.current_period_end);
+  const metadataPlan = text(metadata.planId);
+  let planId: string | null = metadataPlan && isPurchasablePlan(config, metadataPlan) ? metadataPlan : null;
+  let sawPrice = false;
+  let mappedPlan: string | null = null;
+
+  for (const rawItem of itemList) {
+    const item = record(rawItem);
+    if (!periodEnd) {
+      periodEnd = periodEndFromSeconds(item.current_period_end);
+    }
+    const priceId = text(record(item.price).id);
+    if (priceId) {
+      sawPrice = true;
+      const mapped = planIdForPriceId(config, priceId);
+      if (mapped) {
+        mappedPlan = mapped;
+        break;
+      }
+    }
+  }
+
+  if (sawPrice) {
+    // Actual configured price overrides stale metadata; an unknown price fails closed to "free".
+    planId = mappedPlan ?? "free";
+  }
+
+  if (!ownerId) {
+    return {
+      ownerId: "",
+      planId: deleted ? null : planId,
+      status,
+      stripeCustomerId: customerId,
+      stripeSubscriptionId: subscriptionId,
+      currentPeriodEnd: periodEnd,
+      unattributed: true,
+    };
+  }
+
+  return {
+    ownerId,
+    planId: deleted ? null : planId,
+    status,
+    stripeCustomerId: customerId,
+    stripeSubscriptionId: subscriptionId,
+    currentPeriodEnd: periodEnd,
+    unattributed: false,
+  };
+}
+
 /**
  * Translates the Stripe events BackSpyne subscribes to into a subscription update.
  * Returns null for every other event type, and an `unattributed` update when the
@@ -252,48 +371,95 @@ export function subscriptionUpdateFromEvent(event: unknown, config: StripeConfig
   const object = record(record(record(event).data).object);
   const metadata = record(object.metadata);
   const ownerId = text(metadata.ownerId) ?? text(record(event).client_reference_id) ?? text(object.client_reference_id);
-  const customerId = text(object.customer) ?? text(object.customer_id);
-  const subscriptionId = text(object.subscription) ?? text(object.id);
+  const customerId = stripeObjectId(object.customer) ?? text(object.customer_id);
+  const subscriptionId = stripeObjectId(object.subscription) ?? stripeObjectId(object.id);
 
-  if (identity.type === "checkout.session.completed") {
+  if (
+    identity.type === "checkout.session.completed" ||
+    identity.type === "checkout.session.async_payment_succeeded" ||
+    identity.type === "checkout.session.async_payment_failed"
+  ) {
     if (text(object.mode) && text(object.mode) !== "subscription") return null;
-    const planId = text(metadata.planId);
+    const rawPlanId = text(metadata.planId);
+    const planId = rawPlanId && isPurchasablePlan(config, rawPlanId) ? rawPlanId : null;
     const paymentStatus = text(object.payment_status);
-    const status = !paymentStatus || paymentStatus === "paid" || paymentStatus === "no_payment_required"
-      ? "active"
-      : "incomplete";
+    const status =
+      identity.type === "checkout.session.async_payment_failed"
+        ? "incomplete"
+        : paymentStatus === "paid" || paymentStatus === "no_payment_required"
+          ? "active"
+          : "incomplete";
     if (!ownerId) {
-      return { ownerId: "", planId, status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, currentPeriodEnd: null, unattributed: true };
-    }
-    return { ownerId, planId, status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, currentPeriodEnd: null, unattributed: false };
-  }
-
-  if (identity.type === "customer.subscription.created" || identity.type === "customer.subscription.updated" || identity.type === "customer.subscription.deleted") {
-    const status = identity.type === "customer.subscription.deleted" ? "canceled" : knownStatus(object.status) ?? "incomplete";
-    if (!ownerId) {
-      return { ownerId: "", planId: text(metadata.planId), status, stripeCustomerId: customerId, stripeSubscriptionId: subscriptionId, currentPeriodEnd: periodEndFromSeconds(object.current_period_end), unattributed: true };
-    }
-    const items = record(object.items);
-    const itemList = Array.isArray(items.data) ? items.data : [];
-    let planId = text(metadata.planId);
-    for (const item of itemList) {
-      const priceId = record(record(item).price).id;
-      const mapped = planIdForPriceId(config, priceId);
-      if (mapped) {
-        planId = mapped;
-        break;
-      }
+      return {
+        ownerId: "",
+        planId,
+        status,
+        stripeCustomerId: customerId,
+        stripeSubscriptionId: subscriptionId,
+        currentPeriodEnd: null,
+        unattributed: true,
+      };
     }
     return {
       ownerId,
-      planId: identity.type === "customer.subscription.deleted" ? null : planId,
+      planId,
       status,
       stripeCustomerId: customerId,
       stripeSubscriptionId: subscriptionId,
-      currentPeriodEnd: periodEndFromSeconds(object.current_period_end),
+      currentPeriodEnd: null,
       unattributed: false,
     };
   }
 
+  if (
+    identity.type === "customer.subscription.created" ||
+    identity.type === "customer.subscription.updated" ||
+    identity.type === "customer.subscription.deleted"
+  ) {
+    return subscriptionUpdateFromSubscriptionObject(
+      object,
+      config,
+      identity.type === "customer.subscription.deleted",
+    );
+  }
+
   return null;
+}
+
+/**
+ * Retrieves the live subscription state from Stripe so out-of-order or invoice
+ * webhook deliveries always project current truth rather than stale snapshots.
+ */
+export async function currentSubscriptionUpdate(
+  config: StripeConfig,
+  stripeSubscriptionId: string,
+): Promise<StripeSubscriptionUpdate> {
+  const response = await stripeRequest(
+    config,
+    "GET",
+    `/subscriptions/${encodeURIComponent(stripeSubscriptionId)}`,
+  );
+  if (!response.ok || !text(response.body.id)) {
+    throw new Error("Unable to retrieve Stripe subscription");
+  }
+  return subscriptionUpdateFromSubscriptionObject(response.body, config, false);
+}
+
+/** Statuses that represent an ongoing subscription that should be managed in the portal rather than duplicated. */
+export function blocksNewSubscription(status: string | null | undefined): boolean {
+  return (
+    status === "active" ||
+    status === "trialing" ||
+    status === "past_due" ||
+    status === "unpaid" ||
+    status === "incomplete" ||
+    status === "paused"
+  );
+}
+
+/** Scopes Checkout session creation idempotency to the operator, subscription epoch, and time window. */
+export function checkoutIdempotencyKey(ownerId: string, scope: string, nowMs: number = Date.now()): string {
+  const bucket = Math.floor(nowMs / 30_000);
+  const digest = createHash("sha256").update(`${ownerId}:${scope}:${bucket}`, "utf8").digest("hex");
+  return `backspyne-checkout-${digest}`;
 }

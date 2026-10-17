@@ -58,6 +58,7 @@ async function post(url, payload, signature) {
     method: "POST",
     headers: { "Content-Type": "application/json", "Stripe-Signature": signature },
     body: payload,
+    signal: AbortSignal.timeout(12_000),
   });
   let body = {};
   try {
@@ -75,9 +76,8 @@ async function main() {
     console.error("No STRIPE_WEBHOOK_SECRET. Set it in the environment, or write it to .env.stripe.local.");
     process.exit(1);
   }
-  // Never print the secret; its first characters are enough to tell two apart.
   console.log(`Probing ${url}`);
-  console.log(`Secret in use: ${secret.slice(0, 10)}… (length ${secret.length})\n`);
+  console.log('Signing secret loaded (value withheld).\n');
 
   const nonce = Math.random().toString(36).slice(2, 10);
   const timestamp = Math.floor(Date.now() / 1000);
@@ -108,8 +108,20 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  const failure = probeFailure(good, tampered);
+  if (failure) {
+    console.error(`Verdict: FAILED — ${failure}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log("Verdict: OK — this secret verifies, unattributed events are dropped without a write,");
   console.log("and a corrupted signature is refused.");
+}
+
+export function probeFailure(good, tampered) {
+  if (good.status !== 200 || good.body?.received !== true || good.body?.applied !== false) return 'The signed no-op was not explicitly acknowledged without a write.';
+  if (tampered.status !== 400 || tampered.body?.error !== 'Invalid Stripe signature') return 'The negative control did not explicitly reject the forged signature.';
+  return null;
 }
 
 /** The same gitignored local file the setup script reads its key from. */

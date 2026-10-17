@@ -16,7 +16,7 @@ export interface PlanEntitlements {
   /**
    * True only for deployment-configured owner access. The relay allowance stays a real
    * number above so every enforcement path keeps working; this flag is what the portal
-   * reads to describe the account as unlimited instead of printing a large limit.
+   * shows the owner instead of printing a large limit.
    */
   unlimited?: boolean;
 }
@@ -35,10 +35,10 @@ export const PLAN_CATALOG: readonly PlanDefinition[] = [
     id: "free",
     name: "Free",
     priceMonthlyUsd: 0,
-    tagline: "Evaluate an authorized site with one relay.",
+    tagline: "Verify BackSpyne against one authorized relay.",
     highlights: [
       "One authorized relay",
-      "Recent WiFi/BLE inventory",
+      "Validate coverage before committing",
       "Seven days of observation history",
     ],
     entitlements: { maxRelays: 1, historyDays: 7, reportExport: false, csiResearch: false },
@@ -87,16 +87,16 @@ export const PLAN_CATALOG: readonly PlanDefinition[] = [
 ] as const;
 
 /**
- * Owner access. It is deliberately not part of PLAN_CATALOG: it is never purchasable and
- * never appears in the plan grid, because it is granted by deployment configuration
- * (`BACKSPYNE_OWNER_USER_IDS`) rather than bought. The relay allowance is a real ceiling so
- * the enforcement code stays total, and `unlimited` is what the portal shows the owner.
+ * Owner access is deliberate configuration, not a plan in the catalog. It is never
+ * purchasable and never appears in the plan grid, because it is granted through
+ * `BACKSPYNE_OWNER_USER_IDS` rather than bought. The relay allowance stays a real ceiling so
+ * the enforcement code stays total; `unlimited` is what the portal shows the owner.
  */
 export const OWNER_PLAN: PlanDefinition = {
   id: "owner",
   name: "Owner access",
   priceMonthlyUsd: 0,
-  tagline: "Internal operator access with no plan limits.",
+  tagline: "Internal operator access, outside the plan catalog.",
   highlights: [
     "Unlimited authorized relays",
     "Full observation history",

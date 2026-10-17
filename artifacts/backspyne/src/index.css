@@ -241,7 +241,17 @@ a { color: hsl(var(--primary)); }
   color: hsl(var(--primary)); font: 500 12px var(--app-font-sans); white-space: nowrap; padding: 0;
 }
 .banner-action:hover { text-decoration: underline; }
-.status-pill { display: inline-flex; align-items: center; gap: 7px; color: hsl(var(--primary)); font: 500 11px var(--app-font-mono); letter-spacing: .08em; }
+.status-pill { display: inline-flex; align-items: center; gap: 7px; color: hsl(var(--muted-foreground)); font: 500 12px var(--app-font-mono); letter-spacing: .08em; background: transparent; border: 0; padding: 0; }
+.billing-recovery { display: grid; grid-template-columns: 44px 1fr; gap: 12px; align-items: start; border: 1px solid hsl(var(--accent)); background: hsl(33 60% 97%); border-left: 4px solid hsl(var(--accent)); border-radius: 2px; padding: 14px 14px 14px 14px; margin: 0 0 18px; }
+.billing-recovery-icon { color: hsl(var(--accent)); margin-top: 2px; }
+.billing-recovery p { margin: 0 0 8px; }
+.billing-recovery-title { color: hsl(var(--accent)); font-size: 13px; letter-spacing: 0; }
+.billing-recovery-sub { margin: 0; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.55; }
+.billing-recovery .btn { margin-top: 12px; }
+.billing-recovery .btn .arrow { display: inline-block; transition: transform .15s; }
+.billing-recovery .btn:has(svg:last-of-type) svg:last-of-type { transition: transform .15s; }
+.billing-recovery .btn:hover .arrow { transform: translateX(3px); }
+.billing-confirmation { margin: 0 0 18px; color: hsl(var(--muted-foreground)); font: 500 12px var(--app-font-mono); letter-spacing: .08em; background: hsl(150 10% 95%); border: 1px solid hsl(var(--border)); padding: 8px 12px; border-radius: 2px; }
 .status-pill.paused { color: hsl(var(--muted-foreground)); }
 .status-pill.paused .pulse-dot { background: hsl(var(--muted-foreground)); animation: none; }
 .status-pill.warn { color: hsl(var(--accent)); }
@@ -632,7 +642,7 @@ a { color: hsl(var(--primary)); }
   .main-grid, .lower-grid, .nodes-layout, .grid-2 { grid-template-columns: 1fr; }
   .capability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hardware-note-body { align-items: flex-start; flex-direction: column; }
-  .billing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .billing-grid, .pricing-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .assessment-grid { grid-template-columns: 1fr; }
   .landing-steps { grid-template-columns: 1fr; }
 }
@@ -1055,7 +1065,7 @@ h1, .page-heading h1, .panel-title, .landing-copy h1 { text-wrap: balance; }
 .pricing-head { max-width: 78ch; }
 .pricing-head h2 { margin: 8px 0 0; font: 700 24px/1.2 var(--app-font-display); letter-spacing: -.02em; }
 .pricing-head p { margin: 11px 0 0; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.65; }
-.pricing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: hsl(var(--border)); border: 1px solid hsl(var(--border)); margin-top: 22px; }
+.pricing-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: hsl(var(--border)); border: 1px solid hsl(var(--border)); margin-top: 22px; }
 .pricing-card { background: hsl(var(--card)); padding: 18px 17px 20px; display: grid; align-content: start; gap: 11px; }
 .pricing-name { font: 600 15px/1.2 var(--app-font-display); letter-spacing: -.01em; }
 .pricing-price { font: 600 27px/1.1 var(--app-font-display); letter-spacing: -.02em; }

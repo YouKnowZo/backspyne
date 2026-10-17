@@ -59,24 +59,29 @@ export function PricingSection() {
     return () => { disposed = true; };
   }, []);
 
-  const paidPlans: PublicPlan[] = catalog ? catalog.plans.filter(plan => plan.priceMonthlyUsd > 0) : [];
+  const plans: PublicPlan[] = catalog ? catalog.plans : [];
+  const paidPlans: PublicPlan[] = plans.filter(plan => plan.priceMonthlyUsd > 0);
 
   return <section className="pricing" id="pricing" data-testid="pricing">
     <div className="pricing-head">
       <div className="page-kicker">Plans</div>
       <h2>Priced by how much site you cover.</h2>
-      <p>Every plan includes the same relay software, the same console, and the same report. A plan sets how many authorized relays you may pair, how far back the portal reads observation history, whether the CSV ledger can be exported, and whether the experimental CSI research panels appear. Billed monthly, cancel whenever you like.</p>
+      <p>Every plan includes the same relay software, the same console, and the same report. Start free to verify your site with one relay, then upgrade when you need client-ready CSV exports, longer observation history, more relays, or experimental CSI research panels. Billed monthly, cancel whenever you like.</p>
     </div>
     {failed && <p className="pricing-unavailable" data-testid="pricing-unavailable">Pricing is unavailable right now. Sign in to see the plans your account is entitled to.</p>}
     {catalog && paidPlans.length === 0 && <p className="pricing-unavailable" data-testid="pricing-none">No paid plan is offered on this deployment yet. An account can still be created and used on the free allowance.</p>}
-    {paidPlans.length > 0 && <div className="pricing-grid" data-testid="pricing-grid">
-      {paidPlans.map(plan => <div className="pricing-card" key={plan.id} data-testid={`pricing-${plan.id}`}>
-        <div className="pricing-name">{plan.name}</div>
-        <div className="pricing-price">{formatUsd(plan.priceMonthlyUsd)}<small>/month</small></div>
-        <p className="pricing-tagline">{plan.tagline}</p>
-        <ul className="pricing-highlights">{plan.highlights.map(highlight => <li key={highlight}><Check size={12} aria-hidden="true" /><span>{highlight}</span></li>)}</ul>
-        <a className="btn btn-primary" href={`${basePath}/sign-up`}>Start with {plan.name} <ChevronRight size={13} aria-hidden="true" /></a>
-      </div>)}
+    {plans.length > 0 && <div className="pricing-grid" data-testid="pricing-grid">
+      {plans.map(plan => {
+        const paid = plan.priceMonthlyUsd > 0;
+        const target = paid ? `${basePath}/sign-up?plan=${encodeURIComponent(plan.id)}` : `${basePath}/sign-up`;
+        return <div className="pricing-card" key={plan.id} data-testid={`pricing-${plan.id}`}>
+          <div className="pricing-name">{plan.name}</div>
+          <div className="pricing-price">{paid ? <>{formatUsd(plan.priceMonthlyUsd)}<small>/month</small></> : <>Free<small>no charge</small></>}</div>
+          <p className="pricing-tagline">{plan.tagline}</p>
+          <ul className="pricing-highlights">{plan.highlights.map(highlight => <li key={highlight}><Check size={12} aria-hidden="true" /><span>{highlight}</span></li>)}</ul>
+          <a className={`btn ${paid ? 'btn-primary' : ''}`} href={target}>{paid ? `Start with ${plan.name}` : 'Start free'} <ChevronRight size={13} aria-hidden="true" /></a>
+        </div>;
+      })}
     </div>}
     {catalog && <p className="pricing-note">
       Prices are monthly US dollars and exclude any tax the payment provider collects. Plan limits are relay and history allowances,
@@ -111,11 +116,15 @@ export function Landing() {
 }
 
 export function SignInPage() {
-  return <div className="auth-shell"><SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} /></div>;
+  const plan = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('plan') : null;
+  const fallbackRedirectUrl = plan ? `${basePath}/user-portal/plan?selected=${encodeURIComponent(plan)}` : `${basePath}/user-portal`;
+  return <div className="auth-shell"><SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={plan ? `${basePath}/sign-up?plan=${encodeURIComponent(plan)}` : `${basePath}/sign-up`} fallbackRedirectUrl={fallbackRedirectUrl} /></div>;
 }
 
 export function SignUpPage() {
-  return <div className="auth-shell"><SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /></div>;
+  const plan = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('plan') : null;
+  const fallbackRedirectUrl = plan ? `${basePath}/user-portal/plan?selected=${encodeURIComponent(plan)}` : `${basePath}/user-portal`;
+  return <div className="auth-shell"><SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={plan ? `${basePath}/sign-in?plan=${encodeURIComponent(plan)}` : `${basePath}/sign-in`} fallbackRedirectUrl={fallbackRedirectUrl} /></div>;
 }
 
 export function HomeRedirect() {

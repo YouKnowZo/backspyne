@@ -32,7 +32,7 @@ export function requireAuth(
   res: Response,
   next: NextFunction,
 ) {
-  const auth = getAuth(req);
+  const auth = process.env.CLERK_SECRET_KEY && process.env.CLERK_PUBLISHABLE_KEY ? getAuth(req) : null;
   const clerkUserId = String(auth?.sessionClaims?.userId || auth?.userId || "");
   const userId = clerkUserId || adminOwnerIdForRequest(req) || "";
   if (!userId) {
@@ -44,7 +44,7 @@ export function requireAuth(
 }
 
 export function getOptionalUserId(req: Request): string | null {
-  const auth = getAuth(req);
+  const auth = process.env.CLERK_SECRET_KEY && process.env.CLERK_PUBLISHABLE_KEY ? getAuth(req) : null;
   const clerkUserId = auth?.sessionClaims?.userId || auth?.userId;
   if (clerkUserId) return String(clerkUserId);
   return adminOwnerIdForRequest(req);

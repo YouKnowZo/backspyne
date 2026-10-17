@@ -7,12 +7,13 @@
 
 import { useEffect, useState } from 'react';
 import { useUser } from '@clerk/react';
-import { Antenna, Check, Network, Plus, RefreshCw, Shield, ShieldCheck, Trash2, X } from 'lucide-react';
+import { Link } from 'wouter';
+import { Antenna, Check, Download, Network, Plus, RefreshCw, Shield, ShieldCheck, Trash2, X } from 'lucide-react';
 
 import { RelayPlacementPanel } from '../components/location';
 import { useConsoleData } from '../lib/console-data';
 import { relaySlug, relayUsage, timeAgo } from '../lib/format';
-import type { IssuedRelay, RelayListPayload, RelayTokenSummary } from '../lib/types';
+import { VIEW_PATHS, type IssuedRelay, type RelayListPayload, type RelayTokenSummary } from '../lib/types';
 
 /** Pairing a relay is per operator account: the token is shown once and stored as a digest. */
 function RelayPairing() {
@@ -104,6 +105,19 @@ function RelayPairing() {
     }
   };
 
+  const downloadEnvFile = () => {
+    if (!snippet) return;
+    const blob = new Blob([`${snippet}\n`], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '.env';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const active = payload?.relays.filter(relay => relay.active).length ?? 0;
   const allowance = payload?.allowance;
 
@@ -116,12 +130,12 @@ function RelayPairing() {
       <div className="field"><label htmlFor="relay-label">Relay label</label><input id="relay-label" name="relay-label" autoComplete="off" data-testid="input-relay-label" value={label} onChange={event => setLabel(event.target.value)} placeholder="Office AP sweep" maxLength={120} /></div>
       <button className="btn btn-primary" data-testid="button-create-relay" disabled={busy || (allowance ? allowance.remaining <= 0 : false)} onClick={() => void create()}>{busy ? <><RefreshCw className="spin" size={13} /> Working</> : <><Plus size={13} /> Pair a relay</>}</button>
     </div>}
-    {allowance && !allowance.unlimited && allowance.remaining <= 0 && <p className="relay-pairing-note" data-testid="relay-allowance-full">This plan allows {allowance.maxRelays} paired relay{allowance.maxRelays === 1 ? '' : 's'}. Revoke one or upgrade the plan to pair another.</p>}
+    {allowance && !allowance.unlimited && allowance.remaining <= 0 && <p className="relay-pairing-note" data-testid="relay-allowance-full">This plan allows {allowance.maxRelays} paired relay{allowance.maxRelays === 1 ? '' : 's'}. Revoke one or <Link href={VIEW_PATHS.billing}>upgrade the plan</Link> to pair another.</p>}
     {issued && <div className="relay-token" data-testid="relay-token-issued" aria-live="polite">
       <strong>Copy this now — it is not stored and cannot be shown again.</strong>
       <pre style={{ overflowX: 'auto', overflowWrap: 'anywhere' }}>{snippet}</pre>
-      <div className="relay-token-actions"><button className="btn" data-testid="button-copy-relay-token" aria-label="Copy the relay environment lines" onClick={() => void copy()}>{copied ? <><Check size={13} /> Copied</> : 'Copy .env lines'}</button><button className="btn" aria-label={`Hide the token for ${issued.label}`} onClick={() => setIssued(null)}>Hide</button></div>
-      <p className="relay-pairing-note">Paste these into <code>scanner/.env</code> on the machine that will scan, then start the relay with <code>scanner\start.bat</code> (Windows) or <code>./scanner/start.sh</code> (macOS/Linux). Keep it running; this page updates as soon as a signed heartbeat arrives.</p>
+      <div className="relay-token-actions"><button className="btn btn-primary" data-testid="button-copy-relay-token" aria-label="Copy the relay environment lines" onClick={() => void copy()}>{copied ? <><Check size={13} /> Copied</> : 'Copy .env lines'}</button><button className="btn" data-testid="button-download-relay-env" aria-label="Download preconfigured .env file" onClick={downloadEnvFile}><Download size={13} /> Save as .env</button><button className="btn" aria-label={`Hide the token for ${issued.label}`} onClick={() => setIssued(null)}>Hide</button></div>
+      <p className="relay-pairing-note">Save or paste these into <code>scanner/.env</code> on the machine that will scan, then start the relay with <code>scanner\start.bat</code> (Windows) or <code>./scanner/start.sh</code> (macOS/Linux). Keep it running; this page updates as soon as a signed heartbeat arrives.</p>
     </div>}
     {payload && payload.relays.length > 0 ? <div className="relay-list">{payload.relays.map(relay => <div className="relay-row" key={relay.id} data-testid={`relay-row-${relay.id}`}>
       <div style={{ minWidth: 0 }}><div className="relay-row-label" title={relay.label} style={{ overflowWrap: 'anywhere' }}>{relay.label}</div><div className="relay-row-meta">paired {timeAgo(relay.createdAt)} · {relayUsage(relay.lastUsedAt)}</div></div>

@@ -1,0 +1,21 @@
+# Vercel does not inherit all gitignore rules; exclude private local material explicitly.
+.env*
+**/.env*
+!**/.env.example
+.freebuff
+.vercel
+.git
+node_modules
+**/node_modules
+tmp
+.cache
+.local
+scanner/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/*.tsbuildinfo
+dist
+artifacts/*/dist
+lib/*/dist
+**/*.map

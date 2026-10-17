@@ -142,7 +142,7 @@ export type BillingPlan = {
 
 export type BillingCatalog = {
   configured: boolean; currentPlanId: string; currentPlanName?: string; status: string;
-  entitlements: BillingEntitlements; plans: BillingPlan[]; portalAvailable?: boolean;
+  entitlements: BillingEntitlements; plans: BillingPlan[]; portalAvailable?: boolean; subscriptionExists?: boolean; pastDue?: boolean;
 };
 
 export type RelayTokenSummary = {

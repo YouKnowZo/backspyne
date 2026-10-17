@@ -35,6 +35,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { argv } from "node:process";
 import { pathToFileURL } from "node:url";
+import { BILLING_WEBHOOK_EVENTS } from "../artifacts/api-server/src/lib/billing/stripe.ts";
 
 const API = "https://api.stripe.com/v1";
 const STRIPE_VERSION = "2024-06-20";
@@ -52,12 +53,33 @@ export const SELLABLE_PLANS = [
 ];
 
 /** Events the API's webhook handler understands. Anything else it acknowledges and ignores. */
-export const WEBHOOK_EVENTS = [
-  "checkout.session.completed",
-  "customer.subscription.created",
-  "customer.subscription.updated",
-  "customer.subscription.deleted",
-];
+export const WEBHOOK_EVENTS = [...BILLING_WEBHOOK_EVENTS];
+
+/** Merge reruns without deleting the one-time webhook secret or other local settings. */
+export function mergeLocalEnv(existing, entries) {
+  const pending = new Map(entries);
+  const lines = existing.split(/\r?\n/).filter((line) => line !== '').map((line) => {
+    const key = line.split('=', 1)[0];
+    if (!pending.has(key)) return line;
+    const value = pending.get(key);
+    pending.delete(key);
+    return `${key}=${value}`;
+  });
+  for (const [key, value] of pending) lines.push(`${key}=${value}`);
+  return `${lines.join('\n')}\n`;
+}
+
+/** Portal changes invoice prorations rather than silently granting free higher-tier time. */
+export function portalConfigurationFields(products, returnUrl) {
+  return {
+    name: 'BackSpyne billing', metadata: { backspyne: 'billing' }, default_return_url: returnUrl,
+    features: {
+      payment_method_update: { enabled: true }, invoice_history: { enabled: true },
+      subscription_cancel: { enabled: true, mode: 'at_period_end', proration_behavior: 'none' },
+      subscription_update: { enabled: true, default_allowed_updates: ['price'], proration_behavior: 'always_invoice', products },
+    },
+  };
+}
 
 export function readSecretKey(env = process.env) {
   const fromEnv = typeof env.STRIPE_SECRET_KEY === "string" ? env.STRIPE_SECRET_KEY.trim() : "";
@@ -123,6 +145,7 @@ async function stripe(secretKey, method, path, fields = {}) {
       "Stripe-Version": STRIPE_VERSION,
     },
     body: method === "POST" ? encoded : undefined,
+    signal: AbortSignal.timeout(12_000),
   });
   const text = await response.text();
   let body = {};
@@ -155,7 +178,7 @@ export function activeRecurringPriceAt(product, amountUsd, currency) {
     if (price.currency !== currency) continue;
     if (price.unit_amount !== amountUsd * 100) continue;
     if (price.type !== "recurring") continue;
-    if (price.recurring?.interval !== "month") continue;
+    if (price.recurring?.interval !== "month" || (price.recurring.interval_count ?? 1) !== 1) continue;
     return price;
   }
   return null;
@@ -194,6 +217,7 @@ async function main() {
   }
 
   const envLines = [];
+  const portalProducts = [];
   const created = [];
   const reused = [];
 
@@ -205,6 +229,7 @@ async function main() {
       if (price) {
         reused.push(`${plan.planId}: product ${product.id}, price ${price.id} at $${plan.amountUsd}/month`);
         envLines.push([`STRIPE_PRICE_${plan.planId.toUpperCase()}`, price.id]);
+        portalProducts.push({ product: product.id, prices: [price.id] });
         continue;
       }
       console.log(`${plan.planId}: product ${product.id} exists but has no active $${plan.amountUsd}/${currency} monthly price.`);
@@ -219,6 +244,7 @@ async function main() {
         });
         created.push(`${plan.planId}: new price ${price.id} at $${plan.amountUsd}/month on existing product ${product.id}`);
         envLines.push([`STRIPE_PRICE_${plan.planId.toUpperCase()}`, price.id]);
+        portalProducts.push({ product: product.id, prices: [price.id] });
       }
       continue;
     }
@@ -242,7 +268,20 @@ async function main() {
     });
     created.push(`${plan.planId}: product ${product.id}, price ${price.id} at $${plan.amountUsd}/month`);
     envLines.push([`STRIPE_PRICE_${plan.planId.toUpperCase()}`, price.id]);
+    portalProducts.push({ product: product.id, prices: [price.id] });
   }
+
+  const portalList = await stripe(secretKey, 'GET', '/billing_portal/configurations', { limit: '100' });
+  const portal = (portalList.data ?? []).find((entry) => entry.active && entry.metadata?.backspyne === 'billing');
+  if (apply && portalProducts.length === SELLABLE_PLANS.length) {
+    const configured = await stripe(secretKey, 'POST', portal ? `/billing_portal/configurations/${portal.id}` : '/billing_portal/configurations',
+      portalConfigurationFields(portalProducts, `${new URL(webhookUrl).origin}/user-portal/plan?billing=portal`));
+    envLines.push(['STRIPE_PORTAL_CONFIGURATION_ID', configured.id]);
+    console.log(`Portal: ${portal ? 'updated' : 'created'} BackSpyne configuration ${configured.id}.`);
+  } else if (portal) {
+    envLines.push(['STRIPE_PORTAL_CONFIGURATION_ID', portal.id]);
+    console.log(`Portal: existing BackSpyne configuration ${portal.id}.`);
+  } else console.log('Portal: missing BackSpyne configuration; --apply will create it.');
 
   const rotateWebhook = argv.includes("--rotate-webhook");
   const endpoints = await stripe(secretKey, "GET", "/webhook_endpoints", { limit: "100" });
@@ -257,10 +296,19 @@ async function main() {
       url: webhookUrl,
       enabled_events: WEBHOOK_EVENTS,
       description: "BackSpyne subscription state",
+      api_version: STRIPE_VERSION,
     });
     webhookLine = endpoint.secret;
     console.log(`Webhook: created ${endpoint.id} for ${webhookUrl}, listening to ${WEBHOOK_EVENTS.join(", ")}.`);
   } else if (existing) {
+    const missingEvents = WEBHOOK_EVENTS.filter((type) => !existing.enabled_events?.includes(type) && !existing.enabled_events?.includes('*'));
+    if (apply && (missingEvents.length || existing.status !== 'enabled')) {
+      await stripe(secretKey, "POST", `/webhook_endpoints/${existing.id}`, {
+        enabled_events: [...new Set([...(existing.enabled_events ?? []), ...WEBHOOK_EVENTS])],
+        disabled: false,
+      });
+      console.log('Webhook: repaired event subscriptions and enabled status without rotating its secret.');
+    } else if (missingEvents.length) console.log(`Webhook missing events: ${missingEvents.join(', ')}`);
     console.log(`\nWebhook: an endpoint for ${webhookUrl} already exists (${existing.id}, status ${existing.status}).`);
     if (apply && !rotateWebhook) {
       console.log("Stripe reveals a signing secret only at creation, so this script cannot read it back.");
@@ -274,6 +322,7 @@ async function main() {
       url: webhookUrl,
       enabled_events: WEBHOOK_EVENTS,
       description: "BackSpyne subscription state",
+      api_version: STRIPE_VERSION,
     });
     webhookLine = endpoint.secret;
     console.log(`\nWebhook: created ${endpoint.id} for ${webhookUrl}, listening to ${WEBHOOK_EVENTS.join(", ")}.`);
@@ -299,22 +348,20 @@ async function main() {
     } catch {
       existing = "";
     }
-    const kept = existing.split(/\r?\n/).find((line) => line.startsWith("STRIPE_SECRET_KEY=")) ?? "";
-    const header = [
-      "# Stripe configuration for this checkout (gitignored — .gitignore matches `.env*`).",
-      "# Written by scripts/setup-stripe-billing.mjs. Price ids and the webhook signing secret",
-      "# below are the ones the live objects in this Stripe account actually carry; a signing",
-      "# secret is shown once at creation, so this file is the only record of it.",
-    ];
-    const written = [...header, kept, ...envLines.map(([name, value]) => `${name}=${value}`)];
-    if (webhookLine) written.push(`STRIPE_WEBHOOK_SECRET=${webhookLine}`);
-    writeFileSync(path, `${written.filter(Boolean).join("\n")}\n`);
+    const entries = [...envLines];
+    if (webhookLine) entries.push(["STRIPE_WEBHOOK_SECRET", webhookLine]);
+    writeFileSync(path, mergeLocalEnv(existing, entries), { mode: 0o600 });
     console.log(`\nRecorded ${envLines.length + (webhookLine ? 1 : 0)} value(s) in ${path} (gitignored).`);
   } else if (envLines.length || webhookLine) {
     console.log("\nEnvironment lines for the deployment:\n");
     for (const [name, value] of envLines) console.log(`${name}=${value}`);
-    if (webhookLine) console.log(`STRIPE_WEBHOOK_SECRET=${webhookLine}`);
-    console.log("\nRe-run with --write-local-env to record these in .env.stripe.local instead of printing them.");
+    if (webhookLine) {
+      let existing = "";
+      try { existing = readFileSync('.env.stripe.local', 'utf8'); } catch { /* New local configuration. */ }
+      writeFileSync('.env.stripe.local', mergeLocalEnv(existing, [["STRIPE_WEBHOOK_SECRET", webhookLine]]), { mode: 0o600 });
+      console.log('Webhook signing secret saved to gitignored .env.stripe.local; never printed.');
+    }
+    console.log("\nUse --write-local-env to record price IDs in .env.stripe.local too.");
   } else if (!apply) {
     console.log("\nNothing to do. Re-run with --apply to create the objects above.");
   }

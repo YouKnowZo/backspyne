@@ -11,6 +11,8 @@ import { eq, sql } from "drizzle-orm";
 import { logger } from "../logger";
 import { adminOwnerId } from "../adminAuth";
 import { entitlementsFor, effectivePlanId, isOwnerAccount, type PlanEntitlements, type PlanId } from "./plans";
+import { currentSubscriptionUpdate, type StripeConfig } from "./stripe";
+import { applyBillingEvent, type BillingDatabase } from "./store";
 
 // Statement text mirrors lib/db/backspyne-billing.sql. One statement per call: the
 // driver uses the extended protocol, which rejects multi-statement queries.
@@ -58,6 +60,47 @@ export async function readSubscription(ownerId: string): Promise<Subscription | 
   await ensureBillingSchema();
   const rows = await db.select().from(subscriptions).where(eq(subscriptions.ownerId, ownerId)).limit(1);
   return rows[0] ?? null;
+}
+
+/**
+ * Persists the operator's Stripe customer id immediately upon customer creation,
+ * before any subscription exists, so Checkout retries and Portal sessions reuse it.
+ */
+export async function rememberBillingCustomer(ownerId: string, customerId: string): Promise<void> {
+  await ensureBillingSchema();
+  const now = new Date();
+  await db
+    .insert(subscriptions)
+    .values({
+      ownerId,
+      planId: "free",
+      status: "inactive",
+      stripeCustomerId: customerId,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: subscriptions.ownerId,
+      set: { stripeCustomerId: customerId, updatedAt: now },
+    });
+}
+
+/**
+ * Reconciles a Stripe subscription within a serialized PostgreSQL transaction,
+ * committing the event receipt and subscription projection together.
+ */
+export async function reconcileSubscription(
+  config: StripeConfig,
+  identity: { id: string; type: string },
+  ownerId: string,
+  subscriptionId: string,
+): Promise<{ applied: boolean; duplicate?: boolean }> {
+  await ensureBillingSchema();
+  return applyBillingEvent(
+    db as unknown as BillingDatabase,
+    identity,
+    ownerId,
+    () => currentSubscriptionUpdate(config, subscriptionId),
+  );
 }
 
 export interface SubscriptionWrite {

@@ -25,9 +25,11 @@ import {
   activeRecurringPriceAt,
   encodeForm,
   encodeFormValue,
+  mergeLocalEnv,
+  portalConfigurationFields,
   readFlag,
 } from "../setup-stripe-billing.mjs";
-import { noOpEvent, signPayload } from "../probe-stripe-webhook.mjs";
+import { noOpEvent, probeFailure, signPayload } from "../probe-stripe-webhook.mjs";
 import { PLAN_CATALOG } from "../../artifacts/api-server/src/lib/billing/plans.ts";
 
 test("arrays are encoded with an index per element, which is what Stripe accepts", () => {
@@ -130,11 +132,58 @@ test("flags are read without swallowing the next flag as a value", () => {
   assert.equal(readFlag("url", fallback, ["--apply"]), fallback);
 });
 
-test("the webhook subscribes to exactly the events the API understands", () => {
+test("the webhook subscribes to the full set of subscription and invoice lifecycle events", () => {
   assert.deepEqual([...WEBHOOK_EVENTS].sort(), [
+    "checkout.session.async_payment_failed",
+    "checkout.session.async_payment_succeeded",
     "checkout.session.completed",
     "customer.subscription.created",
     "customer.subscription.deleted",
     "customer.subscription.updated",
+    "invoice.paid",
+    "invoice.payment_failed",
   ]);
+});
+
+test("local env merging preserves existing secrets while updating new price ids", () => {
+  const merged = mergeLocalEnv(
+    "STRIPE_SECRET_KEY=sk_test_123\nSTRIPE_WEBHOOK_SECRET=whsec_keep\nSTRIPE_PRICE_SOLO=price_old\n",
+    [["STRIPE_PRICE_SOLO", "price_new"], ["STRIPE_PORTAL_CONFIGURATION_ID", "bpc_1"]],
+  );
+  assert.equal(
+    merged,
+    "STRIPE_SECRET_KEY=sk_test_123\nSTRIPE_WEBHOOK_SECRET=whsec_keep\nSTRIPE_PRICE_SOLO=price_new\nSTRIPE_PORTAL_CONFIGURATION_ID=bpc_1\n",
+  );
+});
+
+test("portal configuration enables payment updates, invoices, period-end cancel, and invoiced price upgrades", () => {
+  const fields = portalConfigurationFields([{ product: "prod_1", prices: ["price_1"] }], "https://example.test/user-portal/plan?billing=portal");
+  assert.equal(fields.default_return_url, "https://example.test/user-portal/plan?billing=portal");
+  assert.equal(fields.features.payment_method_update.enabled, true);
+  assert.equal(fields.features.subscription_cancel.mode, "at_period_end");
+  assert.equal(fields.features.subscription_update.proration_behavior, "always_invoice");
+});
+
+test("probeFailure requires explicit acknowledgement of no-op and explicit rejection of forged signature", () => {
+  assert.equal(
+    probeFailure(
+      { status: 200, body: { received: true, applied: false } },
+      { status: 400, body: { error: "Invalid Stripe signature" } },
+    ),
+    null,
+  );
+  assert.match(
+    probeFailure(
+      { status: 200, body: { received: true, applied: true } },
+      { status: 400, body: { error: "Invalid Stripe signature" } },
+    ),
+    /signed no-op/,
+  );
+  assert.match(
+    probeFailure(
+      { status: 200, body: { received: true, applied: false } },
+      { status: 400, body: { error: "Wrong error" } },
+    ),
+    /negative control/,
+  );
 });

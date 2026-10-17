@@ -1,6 +1,29 @@
 # BackSpyne production launch gate
 
-Status: BLOCKED — server-side authentication is verified for the existing signed-in session; database-backed API access, ingestion, and billing are not working. This document is a launch checklist, not a declaration of production readiness.
+Status: billing reliability repairs verified locally; production release verification is recorded below. The earlier review is retained as history, not current evidence. Full commercial readiness still requires a real payment lifecycle, production identity configuration, legal/tax decisions, and the remaining acceptance checks.
+
+## Billing reliability repair — October 2026
+
+- Webhook event deduplication and subscription updates now commit in one PostgreSQL transaction. A failed write or Stripe lookup rolls back the event receipt, so delivery can be retried. An owner-scoped transaction lock serializes reconciliation; current Stripe state is retrieved inside the lock with bounded network/lock waits to prevent stale delivery order from resurrecting canceled access. This synchronous design avoids relying on non-durable serverless background tasks.
+- Checkout, async payment success/failure, subscription lifecycle, invoice paid, and invoice payment failure events reconcile the current subscription. The current configured price determines access, not stale plan metadata. Unknown prices fail closed.
+- Checkout reuses an idempotently created, persisted customer and existing open sessions; existing ongoing subscriptions are directed to the portal rather than charged for a duplicate plan. Checkout returns to `/user-portal/plan` with a session reference. `POST /api/billing/sync` verifies both session ownership references against the authenticated user and retrieves Stripe state; a redirect alone grants nothing.
+- The catalog exposes `portalAvailable` and `subscriptionExists`; past-due/free-effective accounts retain payment recovery. The view refreshes after Checkout/portal returns, shows confirmation-pending honestly, and displays the actual API error without consuming the response twice. Private billing responses are no-store; foreign-Origin billing mutations are refused.
+- The live Stripe account reports charges/payouts enabled, details submitted, and no currently-due requirements. No live subscriptions existed during this audit. Three existing prices were reused; no card was charged.
+- The previously missing BackSpyne Portal configuration was created with payment-method update, invoice history, end-of-period cancellation, and price-only tier changes with invoiced prorations. Its ID is stored in `STRIPE_PORTAL_CONFIGURATION_ID`. Setup reruns preserve existing secrets, never print a newly minted webhook secret, and repair event subscriptions without secret rotation.
+- PostgreSQL-backed tests use an isolated PGlite engine (test dependency only), not the production database. The actual billing router is exercised over HTTP with explicit identity/Stripe test doubles. These tests prove application behavior, not a real Stripe sandbox payment or multi-connection PostgreSQL concurrency.
+- Browser verification uses the actual Billing component and router with isolated PostgreSQL and clearly labeled simulated Stripe. Past-due portal navigation, return, refresh and clean console/network checks passed. Screenshot capture was unavailable because the embedded webview produced no composited frames.
+- Verification: workspace typecheck, production web/API build, and 137 Node tests. Vite emits an existing non-fatal tooltip sourcemap warning. Scanner code is untouched.
+- Limits: no test-mode Stripe API key is available; Vercel sensitive database credentials are returned redacted. A real sandbox Checkout/payment/renewal/cancellation and live paid customer portal remain unverified. Legal placeholders, production Clerk setup and taxes are not resolved by billing code. Do not treat this as blanket production readiness.
+
+### Release verification
+
+Production deployment succeeded at `https://backspyne-2ejg5azkd-alonzo-locketts-projects.vercel.app` and is aliased to `https://backspyne-app.vercel.app`. Vercel's build completed successfully (about one minute end-to-end); the hosted build reports an existing >500 kB frontend chunk warning. No Git commit or push is part of this repair; task changes remain uncommitted. The deployment uploads the reviewed workspace, not a new commit hash.
+
+Deployed verification: signed no-op webhook 200 with `received:true, applied:false`; forged signature 400. Anonymous catalog/checkout/portal/sync 401; foreign-Origin checkout 403. A real authenticated $39 USD Solo live Checkout was created, its amount/currency/metadata/return URL inspected, and a repeated request returned the same session. The verification session was then expired without payment. A fresh session after that expiry was also verified, so Stripe idempotency cannot trap the account in an expired checkout; the second session was expired without payment as well. The first customer mapping persists for the administrator's billing profile; it grants no subscription access. A real hosted Customer Portal session was created for that customer and returned HTML 200; paid-subscription controls remain untested. Authenticated billing sync/catalog succeeded, and the real signed-in operator plan page rendered owner access and refreshed successfully. Production admin revenue and operator database-backed reads succeeded; no Stripe payment or paid subscription exists from verification.
+
+Upload audit found that Vercel's implicit ignores would include local credential files and verification logs despite Git ignores. `.vercelignore` now explicitly excludes all environment files, private logs/harnesses, workspace metadata, generated builds, caches and maps. A second dry run confirmed zero private/generated paths in 359 upload files; the public scanner `.env.example` is explicitly preserved. Source scans found no local secret values in task source changes.
+
+The browser console after a clean production reload reports Clerk development-key configuration only; an earlier service-worker MIME error did not recur, and `/sw.js` serves JavaScript. Screenshot capture remains unavailable in the embedded webview. Full commercial launch still requires the unresolved identity, payment, tax and legal gates above.
 
 ## Confirmed in this review
 
@@ -108,6 +131,7 @@ The subscription surface is implemented server-side (`artifacts/api-server/src/l
 
 - `STRIPE_SECRET_KEY` — server key. Absent, `GET /api/billing/catalog` still lists the plans but reports checkout as unconfigured, and `POST /api/billing/checkout` answers `503 { code: "billing_not_configured" }` instead of failing halfway.
 - `STRIPE_WEBHOOK_SECRET` — verifies `POST /api/billing/webhook`. Without it no subscription row is ever written, so the admin revenue view reports zero rather than guessing.
+- `STRIPE_PORTAL_CONFIGURATION_ID` — BackSpyne-specific Customer Portal configuration created by the setup script; avoids depending on a missing or unrelated account default.
 - `STRIPE_PRICE_SOLO`, `STRIPE_PRICE_TEAM`, `STRIPE_PRICE_CONSULTANT` — server-side Price IDs for the three sellable plans. A plan without a price id is listed but cannot be bought, and the API never accepts a price from the request body.
 - `FRONTEND_ORIGIN` — the origin Checkout returns to.
 
