@@ -20,6 +20,9 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
+    // esbuild >=0.28 no longer lowers destructuring down to the es2020 default target.
+    // This sandbox previews on modern browsers only, so ask for a modern target.
+    target: "es2022",
   },
   server: {
     port: 0,

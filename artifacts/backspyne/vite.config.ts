@@ -20,5 +20,8 @@ export default defineConfig({
     // directory; the Express function serves this directory at runtime.
     outDir: path.resolve(import.meta.dirname, '../../dist/web'),
     emptyOutDir: true,
+    // esbuild >=0.28 no longer lowers destructuring down to the es2020 default
+    // target. The console's audience expects modern browsers, so ask for one.
+    target: 'es2022',
   },
 });
