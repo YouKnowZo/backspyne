@@ -65,17 +65,16 @@ catalog:
 
 autoInstallPeers: false
 
-onlyBuiltDependencies:
-  - '@swc/core'
-  - esbuild
-  - msw
-  - unrs-resolver
-
-# @clerk/shared ships its distribution already built; its install-time build script
-# contributes nothing to this deployment, so it stays on the blocked list instead of the
-# approved one.
-ignoredBuiltDependencies:
-  - '@clerk/shared'
+allowBuilds:
+  # Explicit allow/deny for install-time build scripts. pnpm 11+ replaces the older
+  # onlyBuiltDependencies/ignoredBuiltDependencies keys with this mapping; every
+  # dependency with a script must be named explicitly or a frozen-lifecycle CI
+  # install fails with ERR_PNPM_IGNORED_BUILDS.
+  '@clerk/shared': false # ships its distribution already built
+  '@swc/core': true
+  esbuild: true
+  msw: true
+  unrs-resolver: true
 
 overrides:
   # replit uses linux-x64 only, we can exclude all other platforms
