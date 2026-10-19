@@ -14,13 +14,14 @@
 // explain what a paid plan adds is to show it.
 
 import { Router, type IRouter } from "express";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { rfDevices, scanNodes } from "@workspace/db/schema";
 import { buildAssessment } from "@workspace/assessment";
 import { requireAuth, getOptionalUserId, type AuthenticatedRequest } from "../lib/auth";
 import { ownerEntitlements } from "../lib/billing/subscriptions";
 import { planDefinition } from "../lib/billing/plans";
+import { enforceOwnerRetentionWindow } from "../lib/retentionStore";
 import { renderAssessmentReport } from "../lib/report";
 import { createReportShareToken, readReportShareToken, shareLinksAvailable, SHARE_TTL_DAYS } from "../lib/reportShare";
 import { toAssessmentDevice } from "../lib/assessmentInput";
@@ -85,11 +86,12 @@ router.get("/report/assessment", async (req: AuthenticatedRequest, res, next) =>
       return;
     }
 
+    const retention = await enforceOwnerRetentionWindow(ownerId);
     const [rows, nodes] = await Promise.all([
       db
         .select()
         .from(rfDevices)
-        .where(eq(rfDevices.ownerId, ownerId))
+        .where(and(eq(rfDevices.ownerId, ownerId), gte(rfDevices.lastSeenAt, retention.cutoffDate)))
         .orderBy(desc(rfDevices.lastSeenAt))
         .limit(REPORT_DEVICE_LIMIT),
       db

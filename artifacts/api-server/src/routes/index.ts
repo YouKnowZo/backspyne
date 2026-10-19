@@ -10,6 +10,7 @@ import phoneRelayRouter from "./phoneRelay";
 import publicRouter from "./public";
 import relaysRouter from "./relays";
 import reportsRouter from "./reports";
+import retentionRouter from "./retention";
 
 const router: IRouter = Router();
 
@@ -29,5 +30,6 @@ router.use(reportsRouter);
 router.use(calibrationRouter);
 router.use(phoneRelayRouter);
 router.use(bridgeRouter);
+router.use(retentionRouter);
 
 export default router;

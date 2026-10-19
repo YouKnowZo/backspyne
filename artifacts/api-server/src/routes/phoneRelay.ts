@@ -22,6 +22,7 @@ import { eq } from "drizzle-orm";
 import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
 import { storeObservations, validSignal } from "../lib/ingest";
 import { ensureNodePlacementSchema } from "../lib/locationSchema";
+import { enforceOwnerRetentionWindow } from "../lib/retentionStore";
 import {
   MAX_FIX_ACCURACY_METERS,
   MAX_VANTAGE_ACCURACY_METERS,
@@ -257,6 +258,7 @@ router.post("/phone-relay/sample", requireAuth, async (req: AuthenticatedRequest
         ? { x: position.x, y: position.y, accuracyMeters: position.accuracyMeters, source: "geolocation" }
         : null,
     });
+    void enforceOwnerRetentionWindow(ownerId);
 
     if (Object.keys(metrics).length) {
       const confidence = typeof metrics.confidence === "number" ? metrics.confidence : null;

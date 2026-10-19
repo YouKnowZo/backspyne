@@ -153,6 +153,55 @@ export type RelayListPayload = { relays: RelayTokenSummary[]; allowance: { maxRe
 
 export type IssuedRelay = { token: string; label: string; nodeId: string };
 
+export type RetentionWindowOption = {
+  days: number;
+  label: string;
+  allowedByPlan: boolean;
+};
+
+export type RetentionFootprint = {
+  devicesTotal: number;
+  devicesExpired: number;
+  sightingsTotal: number;
+  sightingsExpired: number;
+  telemetryEventsTotal: number;
+  sensingSnapshotsTotal: number;
+  oldestObservationAt: string | null;
+};
+
+export type RetentionPolicyPayload = {
+  planId: string;
+  planName: string;
+  configuredDays: number | null;
+  effectiveDays: number;
+  planMaxDays: number;
+  planUnlimited: boolean;
+  autoPrune: boolean;
+  cutoffDate: string;
+  lastPurgedAt: string | null;
+  updatedAt: string | null;
+  options: RetentionWindowOption[];
+  footprint: RetentionFootprint;
+};
+
+export type PurgeResultPayload = {
+  purged: {
+    scope: 'expired' | 'site';
+    purgedAt: string;
+    cutoffDate: string | null;
+    deleted: {
+      devices: number;
+      sightings: number;
+      telemetryEvents: number;
+      sensingSnapshots: number;
+      evidenceRecords: number;
+      calibrationsRetired: number;
+      relaysRemoved: number;
+    };
+  };
+  retention: RetentionPolicyPayload;
+};
+
 /** Everything the console's views read, owned by one provider. */
 export type ConsoleData = {
   devices: RFDevice[];
@@ -165,6 +214,8 @@ export type ConsoleData = {
   toggleFavorite: (id: string) => Promise<void>;
   addNode: (name: string, address: string) => Promise<boolean>;
   removeNode: (id: string) => Promise<void>;
+  /** Reloads stored observations and nodes immediately (for example after a retention change or site purge). */
+  refreshConsoleData: () => Promise<void>;
   /** Set once the operator has run a scan, with what that scan actually found. */
   hardwareScan: HardwareScanResult | null;
   hardware: HardwareCapability[];

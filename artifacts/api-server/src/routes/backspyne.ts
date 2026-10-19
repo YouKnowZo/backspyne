@@ -10,9 +10,10 @@ import {
   sensingSnapshots,
   telemetryEvents,
 } from "@workspace/db/schema";
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, gte } from "drizzle-orm";
 import { requireAuth, type AuthenticatedRequest } from "../lib/auth";
 import { ownerEntitlements } from "../lib/billing/subscriptions";
+import { enforceOwnerRetentionWindow } from "../lib/retentionStore";
 import { storeObservations } from "../lib/ingest";
 import { emit, registerStreamClient, unregisterStreamClient } from "../lib/stream";
 import {
@@ -79,16 +80,17 @@ router.get("/me", requireAuth, (req: AuthenticatedRequest, res) => {
 
 router.get("/devices", requireAuth, async (req: AuthenticatedRequest, res, next) => {
   try {
+    const retention = await enforceOwnerRetentionWindow(req.userId!);
     const rows = await db
       .select()
       .from(rfDevices)
-      .where(eq(rfDevices.ownerId, req.userId!))
+      .where(and(eq(rfDevices.ownerId, req.userId!), gte(rfDevices.lastSeenAt, retention.cutoffDate)))
       .orderBy(desc(rfDevices.lastSeenAt))
       .limit(250);
     const sightings = await db
       .select({ deviceId: rfSightings.deviceId, signalQualityPercent: rfSightings.metadata })
       .from(rfSightings)
-      .where(eq(rfSightings.ownerId, req.userId!))
+      .where(and(eq(rfSightings.ownerId, req.userId!), gte(rfSightings.observedAt, retention.cutoffDate)))
       .orderBy(desc(rfSightings.observedAt))
       .limit(1000);
     const latestQuality = new Map<string, number>();
@@ -313,10 +315,15 @@ router.patch("/devices/:id", requireAuth, async (req: AuthenticatedRequest, res,
 
 router.get("/devices/:id/trail", requireAuth, async (req: AuthenticatedRequest, res, next) => {
   try {
+    const retention = await enforceOwnerRetentionWindow(req.userId!);
     const sightings = await db
       .select()
       .from(rfSightings)
-      .where(and(eq(rfSightings.deviceId, String(req.params.id)), eq(rfSightings.ownerId, req.userId!)))
+      .where(and(
+        eq(rfSightings.deviceId, String(req.params.id)),
+        eq(rfSightings.ownerId, req.userId!),
+        gte(rfSightings.observedAt, retention.cutoffDate),
+      ))
       .orderBy(desc(rfSightings.observedAt))
       .limit(250);
     res.json({ sightings: sightings.map((sighting) => {
@@ -776,6 +783,7 @@ router.post("/ingest/telemetry", async (req, res, next) => {
       observedAt: event.observedAt,
       observations: event.observations,
     });
+    void enforceOwnerRetentionWindow(ownerId);
 
     if (Object.keys(event.metrics).length) {
       const confidence = typeof event.metrics.confidence === "number" && Number.isFinite(event.metrics.confidence) ? event.metrics.confidence : null;

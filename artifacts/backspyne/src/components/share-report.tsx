@@ -10,8 +10,9 @@ import { useRef, useState } from 'react';
 import { Link2, Check, RefreshCw } from 'lucide-react';
 
 import { createReportShareLink } from '../lib/reports';
+import { markFirstRunReportExported } from '../lib/first-run';
 
-export function ShareReportLink({ siteLabel, operatorName }: { siteLabel: string; operatorName: string }) {
+export function ShareReportLink({ siteLabel, operatorName, operatorScope }: { siteLabel: string; operatorName: string; operatorScope?: string | null }) {
   const [state, setState] = useState<'idle' | 'working' | 'copied' | 'manual' | 'failed'>('idle');
   const [message, setMessage] = useState('');
   const [url, setUrl] = useState('');
@@ -32,6 +33,7 @@ export function ShareReportLink({ siteLabel, operatorName }: { siteLabel: string
       return;
     }
     setUrl(link.url);
+    markFirstRunReportExported(operatorScope);
     try {
       await navigator.clipboard.writeText(link.url);
       setState('copied');

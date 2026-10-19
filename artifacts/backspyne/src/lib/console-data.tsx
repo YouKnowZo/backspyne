@@ -96,50 +96,58 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('resize', updateDeviceProfile);
   }, []);
 
+  const refreshConsoleData = useCallback(async () => {
+    try {
+      const [devicesResponse, nodesResponse] = await Promise.all([
+        fetch('/api/devices', { credentials: 'include' }),
+        fetch('/api/nodes', { credentials: 'include' }),
+      ]);
+      if (devicesResponse.status === 401 || nodesResponse.status === 401 || devicesResponse.status === 503 || nodesResponse.status === 503) {
+        setApiStatus('unavailable');
+        setApiConnected(false);
+        setLiveMode(false);
+        setDevices([]);
+        setNodes([]);
+        return;
+      }
+      if (!devicesResponse.ok || !nodesResponse.ok) {
+        setApiStatus('error');
+        throw new Error(`BackSpyne data request failed (${devicesResponse.status}/${nodesResponse.status})`);
+      }
+      const devicePayload = await devicesResponse.json() as { devices?: Array<Record<string, unknown>> };
+      const nodePayload = await nodesResponse.json() as { nodes?: Array<Record<string, unknown>> };
+      setApiStatus('connected');
+      setApiConnected(true);
+      const nextDevices = (devicePayload.devices ?? []).map(liveDeviceFromApi).filter((device): device is RFDevice => device !== null);
+      setDevices(nextDevices);
+      setNodes((nodePayload.nodes ?? []).map(liveNodeFromApi));
+      if (!nextDevices.length) {
+        setSelectedId('');
+        setDetailsOpen(false);
+        setTrail([]);
+        setLocation(null);
+      }
+      const relayActive = Boolean(nodePayload.nodes?.some(node => node.status === 'online'));
+      setLiveMode(relayActive);
+      const sensingResponse = await fetch('/api/sensing/summary', { credentials: 'include' });
+      if (sensingResponse.ok) {
+        const sensingPayload = await sensingResponse.json() as { latest?: SensingSnapshot | null };
+        setSensingSnapshot(sensingPayload.latest ?? null);
+      }
+    } catch {
+      setApiStatus(current => current === 'unavailable' ? current : 'error');
+      setApiConnected(false);
+      setLiveMode(false);
+    }
+  }, []);
+
   // Polled state is the console's spine: relays, observed devices, and the sensing summary.
   // A signed live stream overlays it when the relay is actually reporting.
   useEffect(() => {
     if (!isSignedIn) return;
     let disposed = false;
-    const readLiveState = async () => {
-      try {
-        const [devicesResponse, nodesResponse] = await Promise.all([
-          fetch('/api/devices', { credentials: 'include' }),
-          fetch('/api/nodes', { credentials: 'include' }),
-        ]);
-        if (devicesResponse.status === 401 || nodesResponse.status === 401 || devicesResponse.status === 503 || nodesResponse.status === 503) {
-          setApiStatus('unavailable');
-          setApiConnected(false);
-          setLiveMode(false);
-          setDevices([]);
-          setNodes([]);
-          return;
-        }
-        if (!devicesResponse.ok || !nodesResponse.ok || disposed) {
-          setApiStatus('error');
-          throw new Error(`BackSpyne data request failed (${devicesResponse.status}/${nodesResponse.status})`);
-        }
-        const devicePayload = await devicesResponse.json() as { devices?: Array<Record<string, unknown>> };
-        const nodePayload = await nodesResponse.json() as { nodes?: Array<Record<string, unknown>> };
-        setApiStatus('connected');
-        setApiConnected(true);
-        setDevices((devicePayload.devices ?? []).map(liveDeviceFromApi).filter((device): device is RFDevice => device !== null));
-        setNodes((nodePayload.nodes ?? []).map(liveNodeFromApi));
-        const relayActive = Boolean(nodePayload.nodes?.some(node => node.status === 'online'));
-        setLiveMode(relayActive);
-        const sensingResponse = await fetch('/api/sensing/summary', { credentials: 'include' });
-        if (sensingResponse.ok) {
-          const sensingPayload = await sensingResponse.json() as { latest?: SensingSnapshot | null };
-          setSensingSnapshot(sensingPayload.latest ?? null);
-        }
-      } catch {
-        setApiStatus(current => current === 'unavailable' ? current : 'error');
-        setApiConnected(false);
-        setLiveMode(false);
-      }
-    };
-    void readLiveState();
-    const pollTimer = window.setInterval(() => { void readLiveState(); }, POLL_INTERVAL_MS);
+    void refreshConsoleData();
+    const pollTimer = window.setInterval(() => { if (!disposed) void refreshConsoleData(); }, POLL_INTERVAL_MS);
     void (async () => {
       try {
         const response = await fetch('/api/sessions', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: 'BackSpyne operator session' }) });
@@ -186,7 +194,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     };
     stream.addEventListener('telemetry', onTelemetry as EventListener);
     return () => { disposed = true; window.clearInterval(pollTimer); stream.close(); };
-  }, [isSignedIn]);
+  }, [isSignedIn, refreshConsoleData]);
 
   const select = useCallback((id: string) => { setSelectedId(id); setDetailsOpen(true); }, []);
   const closeDetails = useCallback(() => setDetailsOpen(false), []);
@@ -305,6 +313,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     toggleFavorite,
     addNode,
     removeNode,
+    refreshConsoleData,
     hardware,
     hardwareScan,
     hardwareRefreshing,
@@ -329,7 +338,7 @@ export function ConsoleDataProvider({ children }: { children: ReactNode }) {
     signOut,
   }), [
     devices, nodes, assessment, trail, sensingSnapshot, selectedId, select, toggleFavorite, addNode,
-    removeNode, hardware, hardwareScan, hardwareRefreshing, refreshHardware, requestHardware,
+    removeNode, refreshConsoleData, hardware, hardwareScan, hardwareRefreshing, refreshHardware, requestHardware,
     detailsOpen, closeDetails, location, locationLoading, placeNode, exportLedger, liveMode,
     apiConnected, apiStatus, operatorName, siteLabel, sessionId, isMobile, mobileOpen, signOut,
   ]);

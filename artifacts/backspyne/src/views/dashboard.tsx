@@ -4,20 +4,350 @@
 // own vocabulary. Navigation is a link rather than a callback, so a view can be opened in a
 // new tab and every panel here stays readable on its own.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'wouter';
+import { useUser } from '@clerk/react';
 import {
-  ArrowDownToLine, BarChart3, ChevronRight, Cpu, Crosshair, FileDown, Gauge, MapPin, Radio, RefreshCw,
+  ArrowDownToLine, BarChart3, Check, CheckCircle2, ChevronRight, Compass, Cpu, Download, FileDown, Gauge, MapPin, Plus, Radio, RefreshCw,
   Shield, Signal, Sparkles,
-  TrendingDown, TrendingUp,
+  TrendingDown, TrendingUp, X,
 } from 'lucide-react';
 
+import { BridgeDownload } from '../components/bridge-download';
 import { CountBars, DeviceRows, NodeList, RelayChecklist, SignalChart, SignalScope } from '../components/console';
 import { useConsoleData } from '../lib/console-data';
 import { ShareReportLink } from '../components/share-report';
-import { usd } from '../lib/format';
+import {
+  buildFirstRunProgress,
+  FIRST_RUN_EVENT,
+  markFirstRunReportExported,
+  readFirstRunDismissed,
+  readFirstRunReportExported,
+  writeFirstRunDismissed,
+  type FirstRunStepId,
+} from '../lib/first-run';
+import { relaySlug, usd } from '../lib/format';
 import { clientReportUrl } from '../lib/reports';
-import { VIEW_PATHS, type BillingCatalog } from '../lib/types';
+import { VIEW_PATHS, type BillingCatalog, type IssuedRelay, type RelayListPayload, type RelayTokenSummary } from '../lib/types';
+
+/**
+ * Guided first-run setup checklist on the dashboard.
+ *
+ * Walks a new operator through the three real actions needed for a client handover:
+ *   1. Pair a relay (with inline 1-click relay token generation + .env download, or browser relay link)
+ *   2. Run a room scan (live observation collection from the desktop bridge or browser relay)
+ *   3. Export or share a client report (opens the printable document or copies a signed client link)
+ */
+function FirstRunSetupChecklist({ onOpenClientReport }: { onOpenClientReport: () => void }) {
+  const { user } = useUser();
+  const { nodes, devices, apiStatus, siteLabel, operatorName } = useConsoleData();
+  const operatorScope = user?.id ?? operatorName;
+
+  const [pairedRelays, setPairedRelays] = useState<RelayTokenSummary[]>([]);
+  const [allowance, setAllowance] = useState<RelayListPayload['allowance'] | null>(null);
+  const [reportExportedAt, setReportExportedAt] = useState<string | null>(() => readFirstRunReportExported(operatorScope));
+  const [dismissed, setDismissed] = useState<boolean>(() => readFirstRunDismissed(operatorScope));
+  const [selectedStep, setSelectedStep] = useState<FirstRunStepId | null>(null);
+
+  const [relayLabel, setRelayLabel] = useState('Primary room scanner');
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingError, setPairingError] = useState('');
+  const [issuedRelay, setIssuedRelay] = useState<IssuedRelay | null>(null);
+  const [copiedEnv, setCopiedEnv] = useState(false);
+
+  const loadRelays = useCallback(async () => {
+    try {
+      const response = await fetch('/api/relays', { credentials: 'include' });
+      if (!response.ok) return;
+      const payload = await response.json() as RelayListPayload;
+      setPairedRelays(payload.relays ?? []);
+      setAllowance(payload.allowance ?? null);
+    } catch {
+      // Keep existing relay list if offline.
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRelays();
+  }, [loadRelays, nodes.length]);
+
+  useEffect(() => {
+    setReportExportedAt(readFirstRunReportExported(operatorScope));
+    setDismissed(readFirstRunDismissed(operatorScope));
+  }, [operatorScope]);
+
+  useEffect(() => {
+    const syncFromStorage = () => {
+      setReportExportedAt(readFirstRunReportExported(operatorScope));
+      setDismissed(readFirstRunDismissed(operatorScope));
+    };
+    window.addEventListener(FIRST_RUN_EVENT, syncFromStorage);
+    return () => window.removeEventListener(FIRST_RUN_EVENT, syncFromStorage);
+  }, [operatorScope]);
+
+  const progress = buildFirstRunProgress({
+    apiStatus,
+    nodes,
+    devices,
+    pairedRelays,
+    reportExportedAt,
+  });
+
+  const focusedStepId: FirstRunStepId = selectedStep ?? progress.activeStepId ?? 'export-report';
+
+  const createQuickRelay = async () => {
+    const trimmed = relayLabel.trim() || 'Primary room scanner';
+    setPairingBusy(true);
+    setPairingError('');
+    setCopiedEnv(false);
+    try {
+      const response = await fetch('/api/relays', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: trimmed }),
+      });
+      const body = await response.json().catch(() => null) as { token?: unknown; relay?: RelayTokenSummary; error?: unknown } | null;
+      if (response.ok && typeof body?.token === 'string' && body.token) {
+        setIssuedRelay({
+          token: body.token,
+          label: trimmed,
+          nodeId: `relay-${relaySlug(trimmed)}-${body.relay?.id.slice(-6) ?? '01'}`,
+        });
+        await loadRelays();
+        return;
+      }
+      setPairingError(typeof body?.error === 'string' && body.error ? body.error : `Could not pair relay (${response.status}).`);
+    } catch {
+      setPairingError('Could not reach the operator API to pair a relay.');
+    } finally {
+      setPairingBusy(false);
+    }
+  };
+
+  const envSnippet = issuedRelay ? [
+    '# scanner/.env',
+    `BACKSPYNE_API_URL=${window.location.origin}/api`,
+    `BACKSPYNE_NODE_TOKEN=${issuedRelay.token}`,
+    `BACKSPYNE_NODE_ID=${issuedRelay.nodeId}`,
+    `BACKSPYNE_OWNER_ID=${user?.id ?? '<your operator user id>'}`,
+    'BACKSPYNE_MODE=live',
+  ].join('\n') : '';
+
+  const copyEnvSnippet = async () => {
+    if (!envSnippet) return;
+    try {
+      await navigator.clipboard.writeText(envSnippet);
+      setCopiedEnv(true);
+    } catch {
+      setPairingError('Clipboard access was blocked; use Save as .env or copy the lines below.');
+    }
+  };
+
+  const downloadEnvFile = () => {
+    if (!envSnippet) return;
+    const blob = new Blob([`${envSnippet}\n`], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = '.env';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const toggleDismiss = (next: boolean) => {
+    setDismissed(next);
+    writeFirstRunDismissed(operatorScope, next);
+  };
+
+  if (dismissed) {
+    return <div className="first-run-collapsed" data-testid="first-run-collapsed">
+      <span><Compass size={14} aria-hidden="true" /> <strong>Operator setup guide</strong> · {progress.completedCount} of {progress.totalCount} milestones complete</span>
+      <button type="button" className="btn" data-testid="button-reopen-first-run" onClick={() => toggleDismiss(false)}>Show setup checklist</button>
+    </div>;
+  }
+
+  return <section className="panel first-run-wizard" data-testid="panel-first-run-wizard" aria-label="First-run operator setup checklist">
+    <div className="panel-header">
+      <div>
+        <div className="panel-title">First-run operator setup</div>
+        <div className="panel-subtitle">
+          {progress.allComplete
+            ? 'All 3 milestones completed — your relay, room scan, and client report workflow are ready'
+            : `${progress.completedCount} of ${progress.totalCount} milestones complete · follow each step to produce your first client assessment`}
+        </div>
+      </div>
+      <div className="panel-tools">
+        <span className={`hardware-status ${progress.allComplete ? 'connected' : 'permission'}`} data-testid="first-run-progress-badge">
+          {progress.completedCount}/{progress.totalCount} COMPLETE
+        </span>
+        <button
+          type="button"
+          className="icon-button"
+          data-testid="button-dismiss-first-run"
+          aria-label="Hide first-run setup checklist"
+          title="Hide setup checklist"
+          onClick={() => toggleDismiss(true)}
+        >
+          <X size={14} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+
+    <div className="first-run-track" role="progressbar" aria-valuemin={0} aria-valuemax={3} aria-valuenow={progress.completedCount}>
+      <b style={{ width: `${Math.round((progress.completedCount / progress.totalCount) * 100)}%` }} />
+    </div>
+
+    <ol className="first-run-steps">
+      {progress.steps.map(step => {
+        const isFocused = focusedStepId === step.id;
+        return <li
+          key={step.id}
+          data-testid={`first-run-step-${step.id}`}
+          className={`first-run-step ${step.status} ${isFocused ? 'focused' : ''}`}
+        >
+          <button
+            type="button"
+            className="first-run-step-trigger"
+            data-testid={`button-focus-step-${step.id}`}
+            aria-expanded={isFocused}
+            onClick={() => setSelectedStep(step.id)}
+          >
+            <span className="first-run-step-mark">
+              {step.status === 'complete' ? <Check size={13} aria-hidden="true" /> : step.number}
+            </span>
+            <div className="first-run-step-copy">
+              <div className="first-run-step-top">
+                <strong>{step.title}</strong>
+                <span className={`hardware-status ${step.status === 'complete' ? 'connected' : step.status === 'active' ? 'permission' : 'unsupported'}`}>
+                  {step.status === 'complete' ? 'done' : step.status === 'active' ? 'next step' : 'queued'}
+                </span>
+              </div>
+              <span className="first-run-step-summary">{step.summary}</span>
+            </div>
+          </button>
+        </li>;
+      })}
+    </ol>
+
+    <div className="first-run-stage" data-testid={`first-run-stage-${focusedStepId}`}>
+      {focusedStepId === 'pair-relay' && (
+        <div className="first-run-stage-body">
+          <div className="first-run-stage-copy">
+            <span className="eyebrow">Step 01 · Pair your first relay</span>
+            <h3>Connect a scanner to this operator account</h3>
+            <p>{progress.steps[0].detail}</p>
+            {pairingError && <div className="billing-notice error" role="status" data-testid="first-run-pair-error">{pairingError}</div>}
+            {!issuedRelay ? (
+              <div className="first-run-inline-form">
+                <div className="field">
+                  <label htmlFor="first-run-relay-label">Relay label</label>
+                  <input
+                    id="first-run-relay-label"
+                    name="first-run-relay-label"
+                    autoComplete="off"
+                    data-testid="input-first-run-relay-label"
+                    value={relayLabel}
+                    maxLength={120}
+                    onChange={event => setRelayLabel(event.target.value)}
+                    placeholder="Primary room scanner"
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  data-testid="button-first-run-pair-relay"
+                  disabled={pairingBusy || (allowance ? !allowance.unlimited && allowance.remaining <= 0 : false)}
+                  onClick={() => void createQuickRelay()}
+                >
+                  {pairingBusy ? <><RefreshCw className="spin" size={13} aria-hidden="true" /> Issuing token</> : <><Plus size={13} aria-hidden="true" /> Pair desktop relay now</>}
+                </button>
+                <Link className="btn" data-testid="link-first-run-browser-relay" href={VIEW_PATHS.hardware}>
+                  Or use browser relay (no install) <ChevronRight size={13} aria-hidden="true" />
+                </Link>
+              </div>
+            ) : (
+              <div className="relay-token" data-testid="first-run-relay-issued" aria-live="polite">
+                <strong>Relay paired — save this <code>.env</code> into your <code>scanner/</code> folder now (shown once).</strong>
+                <pre>{envSnippet}</pre>
+                <div className="relay-token-actions">
+                  <button type="button" className="btn btn-primary" data-testid="button-first-run-download-env" onClick={downloadEnvFile}>
+                    <Download size={13} aria-hidden="true" /> Save as .env
+                  </button>
+                  <button type="button" className="btn" data-testid="button-first-run-copy-env" onClick={() => void copyEnvSnippet()}>
+                    {copiedEnv ? <><Check size={13} aria-hidden="true" /> Copied</> : 'Copy .env lines'}
+                  </button>
+                  <button type="button" className="btn" data-testid="button-first-run-advance-scan" onClick={() => setSelectedStep('room-scan')}>
+                    Continue to Step 02 <ChevronRight size={13} aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {focusedStepId === 'room-scan' && (
+        <div className="first-run-stage-body">
+          <div className="first-run-stage-copy">
+            <span className="eyebrow">Step 02 · Run a room scan</span>
+            <h3>Collect live WiFi &amp; Bluetooth observations</h3>
+            <p>{progress.steps[1].detail}</p>
+            <div className="checklist-commands">
+              <code>Windows&nbsp;&nbsp;scanner\start.bat</code>
+              <code>macOS / Linux&nbsp;&nbsp;./scanner/start.sh</code>
+            </div>
+            <div className="first-run-actions">
+              <Link className="btn btn-primary" data-testid="link-first-run-hardware-scan" href={VIEW_PATHS.hardware}>
+                <Radio size={14} aria-hidden="true" /> Open Hardware &amp; browser relay
+              </Link>
+              <Link className="btn" data-testid="link-first-run-calibration" href={VIEW_PATHS.calibration}>
+                <MapPin size={14} aria-hidden="true" /> Run a calibration walk
+              </Link>
+              {progress.scanCompleted && (
+                <button type="button" className="btn" data-testid="button-first-run-advance-report" onClick={() => setSelectedStep('export-report')}>
+                  Continue to Step 03 <ChevronRight size={13} aria-hidden="true" />
+                </button>
+              )}
+            </div>
+            <BridgeDownload testId="bridge-download-first-run" />
+          </div>
+        </div>
+      )}
+
+      {focusedStepId === 'export-report' && (
+        <div className="first-run-stage-body">
+          <div className="first-run-stage-copy">
+            <span className="eyebrow">Step 03 · Export a client report</span>
+            <h3>Hand over the printable assessment or signed client link</h3>
+            <p>{progress.steps[2].detail}</p>
+            <div className="first-run-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                data-testid="button-first-run-export-report"
+                onClick={onOpenClientReport}
+              >
+                <FileDown size={14} aria-hidden="true" /> Open printable client report
+              </button>
+              <Link className="btn" data-testid="link-first-run-assessment" href={VIEW_PATHS.sensing}>
+                Inspect full assessment <ChevronRight size={13} aria-hidden="true" />
+              </Link>
+            </div>
+            <ShareReportLink siteLabel={siteLabel} operatorName={operatorName} operatorScope={operatorScope} />
+            {progress.reportExported && (
+              <p className="first-run-complete-note" data-testid="first-run-complete-note">
+                <CheckCircle2 size={14} aria-hidden="true" /> Setup complete. Your printable assessment and shareable link reflect every new observation stored by your relays.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  </section>;
+}
 
 /**
  * Where this account's radios can actually be placed.
@@ -130,7 +460,13 @@ function PlanPanel() {
  * cannot disagree about what was measured.
  */
 export function MeasurementAssessment() {
+  const { user } = useUser();
   const { assessment, operatorName, siteLabel } = useConsoleData();
+  const operatorScope = user?.id ?? operatorName;
+  const openReport = () => {
+    markFirstRunReportExported(operatorScope);
+    window.open(clientReportUrl(siteLabel, operatorName), '_blank', 'noopener');
+  };
   const { channelPlan, security, vendors, signals, totals, findings } = assessment;
   return <div className="assessment-grid">
     <section className="panel assessment-card" data-testid="assessment-channel-plan">
@@ -168,19 +504,25 @@ export function MeasurementAssessment() {
       <p className="assessment-note">A radio the relay reported within the last minute is current, up to five minutes is idle, and anything older stays in scope as history. Older rows are the same devices seen earlier, not new ones.</p>
     </section>
     <section className="panel assessment-card assessment-wide" data-testid="assessment-findings">
-      <div className="panel-header"><div><div className="panel-title">Findings</div><div className="panel-subtitle">{findings.length} statement{findings.length === 1 ? '' : 's'} this data supports, each with what it does not mean</div></div><button className="btn btn-primary" data-testid="button-client-report-sensing" onClick={() => window.open(clientReportUrl(siteLabel, operatorName), '_blank', 'noopener')}><FileDown size={14} /> Prepare client report</button></div>
+      <div className="panel-header"><div><div className="panel-title">Findings</div><div className="panel-subtitle">{findings.length} statement{findings.length === 1 ? '' : 's'} this data supports, each with what it does not mean</div></div><button className="btn btn-primary" data-testid="button-client-report-sensing" onClick={openReport}><FileDown size={14} /> Prepare client report</button></div>
       <ol className="findings">{findings.map(finding => <li key={finding.id} className={`finding ${finding.severity}`} data-testid={`finding-${finding.id}`}><span className="chip">{finding.severity === 'attention' ? 'Needs a look' : 'Context'}</span><h3>{finding.title}</h3><p>{finding.detail}</p></li>)}</ol>
       <p className="assessment-note">The client report is this same assessment as a printable document: sectioned so it can be cited, with the method and its limits printed after the findings. On a plan without reporting it carries a trial notice.</p>
-      <ShareReportLink siteLabel={siteLabel} operatorName={operatorName} />
+      <ShareReportLink siteLabel={siteLabel} operatorName={operatorName} operatorScope={operatorScope} />
     </section>
   </div>;
 }
 
 export function Dashboard() {
+  const { user } = useUser();
   const {
     devices, nodes, assessment, operatorName, siteLabel, selectedId, select, toggleFavorite,
     liveMode: scanning, apiConnected, apiStatus, trail,
   } = useConsoleData();
+  const operatorScope = user?.id ?? operatorName;
+  const openClientReport = () => {
+    markFirstRunReportExported(operatorScope);
+    window.open(clientReportUrl(siteLabel, operatorName), '_blank', 'noopener');
+  };
   const selected = devices.find(d => d.id === selectedId);
   const visibleDevices = devices.filter(d => d.status !== 'ghost');
   const activeNodes = nodes.filter(node => node.status === 'online').length;
@@ -198,8 +540,9 @@ export function Dashboard() {
   })();
   const strengthTrend = latestSampleDbm === null || oldestSampleDbm === null ? null : latestSampleDbm - oldestSampleDbm > 3 ? 'stronger' : oldestSampleDbm - latestSampleDbm > 3 ? 'weaker' : 'steady';
   const historyEmptyMessage = trail.length ? 'Not enough reported signal samples to show a trend' : undefined;
-  return <><div className="page-heading"><div><div className="page-kicker">Wireless assessment</div><h1>What this relay is hearing.</h1><p>WiFi access points and Bluetooth advertisers reported by your authorized relay at one vantage point. Standard scanning does not enumerate every nearby client device, and these measurements describe radios, not people.</p></div><div className="header-actions"><button className="btn btn-primary" data-testid="button-client-report-dashboard" onClick={() => window.open(clientReportUrl(siteLabel, operatorName), '_blank', 'noopener')}><FileDown size={14} /> Prepare client report</button><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
+  return <><div className="page-heading"><div><div className="page-kicker">Wireless assessment</div><h1>What this relay is hearing.</h1><p>WiFi access points and Bluetooth advertisers reported by your authorized relay at one vantage point. Standard scanning does not enumerate every nearby client device, and these measurements describe radios, not people.</p></div><div className="header-actions"><button className="btn btn-primary" data-testid="button-client-report-dashboard" onClick={openClientReport}><FileDown size={14} /> Prepare client report</button><button className="btn" data-testid="button-refresh-dashboard" onClick={() => window.location.reload()}><RefreshCw size={14} /> Refresh view</button></div></div>
      <div className="signal-banner"><Shield /><span><strong>Authorized environment only.</strong> {scanning ? 'Signed observations from an authorized local node are flowing into this session.' : apiStatus === 'error' ? 'The API returned an error reading scan data; the relay status cannot be confirmed. The database connection must be repaired before scans can be stored.' : apiStatus === 'unavailable' ? 'The operator API is unavailable, so relay status cannot be checked.' : nodes.length ? 'An authorized node is registered, but it has not reported an observation yet. Check its local bridge permissions and logs.' : apiConnected ? 'The operator API is connected, but no local relay is connected. Start the bridge from Hardware scan.' : 'Checking operator API and authorized relay status.'} This dashboard lists WiFi APs/BLE advertisers only, not all nearby phones or people.</span><Link className="banner-action" href={VIEW_PATHS.hardware}>Hardware scan <ChevronRight size={14} /></Link></div>
+     <FirstRunSetupChecklist onOpenClientReport={openClientReport} />
      <RelayChecklist nodes={nodes} devices={devices} apiStatus={apiStatus} />
      <div className="lower-grid"><PlanPanel /><PositionCoveragePanel /></div>
      <section className="panel hero-plate" data-testid="panel-live-summary">

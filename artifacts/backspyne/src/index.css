@@ -1102,3 +1102,122 @@ h1, .page-heading h1, .panel-title, .landing-copy h1 { text-wrap: balance; }
 .signal-derived { color: hsl(var(--accent)); cursor: help; border-bottom: 1px dotted hsl(var(--accent)); }
 .plan-upsell { border-top: 1px solid hsl(var(--border)); }
 .signal-cell .signal-derived + span { opacity: .75; }
+
+/* ==========================================================================
+   First-run operator onboarding checklist
+   ========================================================================== */
+.first-run-wizard { margin-bottom: 11px; }
+.first-run-collapsed {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid hsl(var(--border)); background: hsl(var(--card)); border-radius: 2px;
+  padding: 10px 14px; margin-bottom: 11px; font-size: 12.5px; color: hsl(var(--muted-foreground));
+}
+.first-run-collapsed span { display: inline-flex; align-items: center; gap: 8px; }
+.first-run-collapsed svg { color: hsl(var(--primary)); flex: none; }
+.first-run-collapsed strong { color: hsl(var(--foreground)); }
+.first-run-track { height: 3px; background: hsl(var(--muted)); border-bottom: 1px solid hsl(var(--border)); overflow: hidden; }
+.first-run-track b { display: block; height: 100%; background: hsl(var(--primary)); transition: width .22s ease-out; }
+.first-run-steps {
+  list-style: none; margin: 0; padding: 0; display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px;
+  background: hsl(var(--border)); border-bottom: 1px solid hsl(var(--border));
+}
+.first-run-step { background: hsl(var(--card)); min-width: 0; }
+.first-run-step-trigger {
+  width: 100%; border: 0; border-top: 2px solid transparent; background: transparent;
+  padding: 13px 15px; display: flex; align-items: flex-start; gap: 11px; text-align: left;
+  transition: background .15s, border-color .15s;
+}
+.first-run-step-trigger:hover { background: hsl(var(--sidebar-accent)); }
+.first-run-step.focused .first-run-step-trigger {
+  background: hsl(176 73% 22% / .05);
+  border-top-color: hsl(var(--primary));
+}
+.first-run-step-mark {
+  width: 24px; height: 24px; flex: none; display: grid; place-items: center;
+  border: 1px solid hsl(var(--border)); font: 600 11px var(--app-font-mono);
+  color: hsl(var(--muted-foreground)); background: hsl(var(--card));
+}
+.first-run-step.complete .first-run-step-mark {
+  border-color: hsl(var(--primary)); color: hsl(var(--primary));
+}
+.first-run-step.active .first-run-step-mark {
+  border-color: hsl(var(--accent)); color: hsl(var(--accent));
+}
+.first-run-step-copy { flex: 1; min-width: 0; }
+.first-run-step-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.first-run-step-top strong { font: 600 13.5px/1.25 var(--app-font-display); }
+.first-run-step-summary {
+  display: block; margin-top: 5px; color: hsl(var(--muted-foreground));
+  font: 11px/1.45 var(--app-font-mono); overflow-wrap: anywhere;
+}
+.first-run-stage { padding: 16px 16px 18px; background: hsl(var(--card)); }
+.first-run-stage-copy h3 { margin: 5px 0 0; font-size: 16px; }
+.first-run-stage-copy > p { margin: 7px 0 13px; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.6; max-width: 86ch; }
+.first-run-inline-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 9px; }
+.first-run-inline-form .field { flex: 1 1 220px; max-width: 340px; }
+.first-run-inline-form input { width: 100%; }
+.first-run-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 10px; }
+.first-run-stage .relay-token { margin: 10px 0 0; }
+.first-run-complete-note {
+  margin: 12px 0 0; display: flex; align-items: center; gap: 8px;
+  color: hsl(var(--primary)); font: 500 12px/1.5 var(--app-font-mono);
+}
+
+@media (max-width: 900px) {
+  .first-run-steps { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .first-run-inline-form .field { flex-basis: 100%; max-width: none; }
+  .first-run-inline-form .btn, .first-run-actions .btn { flex: 1 1 100%; }
+}
+
+/* ==========================================================================
+   Observation retention & site data purge panel
+   ========================================================================== */
+.retention-panel { margin-bottom: 11px; }
+.retention-panel .billing-notice { margin: 11px 16px 0; }
+.retention-grid {
+  display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr);
+  gap: 1px; background: hsl(var(--border));
+}
+.retention-column { background: hsl(var(--card)); padding: 15px 16px 16px; display: grid; align-content: start; gap: 11px; }
+.retention-column > .eyebrow { display: inline-flex; align-items: center; gap: 6px; }
+.retention-column > .eyebrow svg { color: hsl(var(--primary)); }
+.retention-purge-column > .eyebrow svg { color: hsl(var(--accent)); }
+.retention-copy { margin: 0; color: hsl(var(--muted-foreground)); font-size: 12.5px; line-height: 1.6; }
+.retention-copy strong { color: hsl(var(--foreground)); }
+.retention-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.retention-controls .field { flex: 1 1 220px; max-width: 320px; }
+.retention-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.retention-meta {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; padding-top: 10px;
+  border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground));
+  font: 11px/1.45 var(--app-font-mono);
+}
+.retention-meta strong { color: hsl(var(--foreground)); font-weight: 600; }
+.retention-checkbox {
+  display: flex; align-items: flex-start; gap: 8px; color: hsl(var(--muted-foreground));
+  font-size: 12px; line-height: 1.5; cursor: pointer;
+}
+.retention-checkbox input { margin-top: 2px; width: 15px; height: 15px; accent-color: hsl(var(--primary)); flex: none; }
+.retention-confirm-box {
+  border: 1px solid hsl(var(--accent)); border-left: 3px solid hsl(var(--accent));
+  background: hsl(33 60% 97%); padding: 12px 13px; border-radius: 2px; display: grid; gap: 10px;
+}
+.retention-confirm-copy { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.55; color: hsl(var(--foreground)); }
+.retention-confirm-copy svg { color: hsl(var(--accent)); flex: none; margin-top: 2px; }
+.retention-footnote {
+  margin: 0; padding-top: 10px; border-top: 1px solid hsl(var(--border));
+  display: flex; align-items: center; gap: 7px; color: hsl(var(--muted-foreground));
+  font-size: 11.5px; line-height: 1.5;
+}
+.retention-footnote svg { color: hsl(var(--primary)); flex: none; }
+
+@media (max-width: 900px) {
+  .retention-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 700px) {
+  .retention-controls .field { flex-basis: 100%; max-width: none; }
+  .retention-actions .btn { flex: 1 1 100%; }
+}
